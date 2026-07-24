@@ -1,0 +1,7 @@
+default: sonnet
+ranked:
+  - opus
+  - sonnet
+  - opencode-go/kimi-k2.6
+  - claude-pty/opus
+  - claude-pty/sonnet

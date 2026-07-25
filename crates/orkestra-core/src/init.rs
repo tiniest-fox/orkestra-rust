@@ -485,6 +485,26 @@ mod tests {
     }
 
     #[test]
+    fn test_standard_checks_metadata_parseable() {
+        use crate::workflow::config::technique::parse_check_metadata;
+
+        let meta = parse_check_metadata(DEFAULT_CHECKS)
+            .expect("DEFAULT_CHECKS must parse with parse_check_metadata");
+        assert!(
+            !meta.title.is_empty(),
+            "standard-checks.sh title must not be empty"
+        );
+        assert!(
+            !meta.description.is_empty(),
+            "standard-checks.sh description must not be empty"
+        );
+        assert!(
+            meta.timeout_seconds > 0,
+            "standard-checks.sh timeout_seconds must be positive"
+        );
+    }
+
+    #[test]
     fn test_models_yaml_created() {
         let temp_dir = TempDir::new().unwrap();
         let orkestra_dir = temp_dir.path().join(".orkestra");

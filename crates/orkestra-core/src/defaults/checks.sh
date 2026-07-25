@@ -1,6 +1,9 @@
 #!/bin/bash
-# Checks Script
-# =============
+# ---
+# title: Standard Checks
+# description: Project build, lint, and test checks
+# timeout_seconds: 300
+# ---
 # Runs automatically after an agent completes a stage with a gate.
 # Customize this script for your project's build, lint, and test commands.
 #
@@ -22,4 +25,4 @@ set -e
 # npm test
 # pytest
 
-echo "No checks configured — edit .orkestra/scripts/checks.sh for your project"
+echo "No checks configured — edit .orkestra/checks/standard-checks.sh for your project"

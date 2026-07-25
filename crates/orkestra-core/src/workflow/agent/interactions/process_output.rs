@@ -111,13 +111,6 @@ pub(crate) fn dispatch_output(
     // Extract resources before the match consumes the output.
     let output_resources = output.resources().to_vec();
 
-    // Resolve whether an automated gate applies for this stage. Gate resolution is the
-    // single source of truth here — handle_artifact receives the pre-computed flag so
-    // it stays free of filesystem I/O. The conflict check (technique checks + agentic
-    // gate) lives exclusively in spawn_one_gate.
-    let has_automated_gate =
-        resolve_has_automated_gate(workflow, &task.flow, current_stage, project_root)?;
-
     let artifact_name: Option<String> = match output {
         StageOutput::Questions { questions, .. } => {
             super::handle_questions::execute(
@@ -136,15 +129,21 @@ pub(crate) fn dispatch_output(
                 "artifact",
             ))
         }
-        StageOutput::Artifact { content, .. } => super::handle_artifact::execute(
-            workflow,
-            iteration_service,
-            task,
-            &content,
-            current_stage,
-            now,
-            has_automated_gate,
-        )?,
+        StageOutput::Artifact { content, .. } => {
+            // Resolve gate only here — the only consumer. Avoids failing Questions/Failed/Blocked
+            // outputs with a confusing technique-resolution error when the gate config is malformed.
+            let has_automated_gate =
+                resolve_has_automated_gate(workflow, &task.flow, current_stage, project_root)?;
+            super::handle_artifact::execute(
+                workflow,
+                iteration_service,
+                task,
+                &content,
+                current_stage,
+                now,
+                has_automated_gate,
+            )?
+        }
         StageOutput::Approval {
             decision,
             content,

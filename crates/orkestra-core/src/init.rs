@@ -83,6 +83,10 @@ pub fn ensure_orkestra_project(orkestra_dir: &Path) -> std::io::Result<()> {
         "scripts/worktree_cleanup.sh",
         DEFAULT_WORKTREE_CLEANUP,
     )?;
+    // scripts/checks.sh: legacy path for projects using explicit `gate: { script: checks.sh }`
+    // in workflow.yaml. Technique-based gates resolve scripts from checks/ instead.
+    // Both start identical — users who customize one for non-technique gates should mirror
+    // changes here; technique gates will pick up checks/standard-checks.sh exclusively.
     write_default_executable(orkestra_dir, "scripts/checks.sh", DEFAULT_CHECKS)?;
     write_default_executable(orkestra_dir, "scripts/run.sh", DEFAULT_RUN_SCRIPT)?;
     write_default(orkestra_dir, "workflow.yaml", DEFAULT_WORKFLOW)?;

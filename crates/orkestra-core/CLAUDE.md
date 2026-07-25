@@ -437,7 +437,4 @@ Two test coverage gaps exist in `test_checks_script_is_executable` (the `ensure_
 
 2. **No workflow-to-prompt coherence check.** No test validates that every `prompt:` reference in the default `workflow.yaml` has a corresponding entry in `DEFAULT_PROMPTS`. A coherence test would catch init-time breakage when prompt files are added or renamed.
 
-One implementation gap to address in Phase 3:
-
-3. **Default technique templates reference `check: checks` but no default check script at that name is seeded.** `implementation-conventions.md` and `standard-verification.md` both declare `check: checks` in their frontmatter, but `ensure_orkestra_project` does not create a `checks` script in `.orkestra/checks/`. Phase 3 must either seed a default `checks` script or update these templates to reference an existing default (e.g., `standard-checks`).
 

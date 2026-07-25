@@ -521,7 +521,7 @@ impl WorkflowConfig {
                 }
                 if !stage.techniques.is_empty() && stage.prompt.is_some() {
                     errors.push(format!(
-                        "stage '{}' has both techniques and prompt — prompt will be ignored",
+                        "stage '{}' must not have both techniques and prompt — remove one",
                         stage.name
                     ));
                 }
@@ -1553,7 +1553,9 @@ vibe:
         let workflow = WorkflowConfig::new(vec![stage]);
         let errors = workflow.validate();
         assert!(
-            errors.iter().any(|e| e.contains("prompt will be ignored")),
+            errors
+                .iter()
+                .any(|e| e.contains("must not have both techniques and prompt")),
             "Expected techniques+prompt warning, got: {errors:?}"
         );
     }

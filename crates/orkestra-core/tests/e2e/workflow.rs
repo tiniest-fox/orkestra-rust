@@ -10950,7 +10950,11 @@ fn test_technique_disallowed_tools_merge() {
     ctx.advance();
 
     let config = ctx.last_run_config();
-    let patterns: Vec<&str> = config.disallowed_tools.iter().map(std::string::String::as_str).collect();
+    let patterns: Vec<&str> = config
+        .disallowed_tools
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
     assert!(
         patterns.contains(&"Edit"),
         "Edit restriction from technique A should be present"

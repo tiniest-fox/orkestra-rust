@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::orkestra_debug;
-use crate::workflow::config::WorkflowConfig;
+use crate::workflow::config::{load_and_resolve_techniques, GateConfig, WorkflowConfig};
 use crate::workflow::domain::{LogEntry, Task, WorkflowArtifact};
 use crate::workflow::execution::StageOutput;
 use crate::workflow::iteration::IterationService;
@@ -111,6 +111,13 @@ pub(crate) fn dispatch_output(
     // Extract resources before the match consumes the output.
     let output_resources = output.resources().to_vec();
 
+    // Resolve whether an automated gate applies for this stage. Gate resolution is the
+    // single source of truth here — handle_artifact receives the pre-computed flag so
+    // it stays free of filesystem I/O. The conflict check (technique checks + agentic
+    // gate) lives exclusively in spawn_one_gate.
+    let has_automated_gate =
+        resolve_has_automated_gate(workflow, &task.flow, current_stage, project_root)?;
+
     let artifact_name: Option<String> = match output {
         StageOutput::Questions { questions, .. } => {
             super::handle_questions::execute(
@@ -136,7 +143,7 @@ pub(crate) fn dispatch_output(
             &content,
             current_stage,
             now,
-            project_root,
+            has_automated_gate,
         )?,
         StageOutput::Approval {
             decision,
@@ -152,7 +159,6 @@ pub(crate) fn dispatch_output(
             &content,
             route_to.as_deref(),
             now,
-            project_root,
         )?,
         StageOutput::Subtasks {
             content, subtasks, ..
@@ -278,6 +284,38 @@ fn persist_and_emit_artifact(
         },
         Some(iteration_id),
     )
+}
+
+/// Determine whether an automated gate applies for the given stage.
+///
+/// Returns `true` for explicitly-configured automated gates or for technique-derived
+/// gates (when a technique's `check:` resolves to a check script). Does NOT validate
+/// the technique-checks + agentic-gate conflict — that check lives exclusively in
+/// `spawn_one_gate` in the orchestrator.
+fn resolve_has_automated_gate(
+    workflow: &WorkflowConfig,
+    flow: &str,
+    stage_name: &str,
+    project_root: Option<&Path>,
+) -> WorkflowResult<bool> {
+    let stage_cfg = workflow.stage(flow, stage_name);
+
+    if stage_cfg
+        .and_then(|s| s.gate.as_ref())
+        .is_some_and(|g| matches!(g, GateConfig::Automated { .. }))
+    {
+        return Ok(true);
+    }
+
+    if let (Some(root), Some(sc)) = (project_root, stage_cfg) {
+        if !sc.techniques.is_empty() {
+            let resolved = load_and_resolve_techniques(root, &sc.techniques)
+                .map_err(|e| WorkflowError::InvalidState(format!("Technique resolution: {e}")))?;
+            return Ok(!resolved.checks.is_empty());
+        }
+    }
+
+    Ok(false)
 }
 
 /// Convert parsed resource output into `Resource` entries and merge into the store.

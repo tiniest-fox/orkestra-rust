@@ -1,7 +1,5 @@
 //! Handle approval output: approve stores artifact and advances, reject sends to rejection target.
 
-use std::path::Path;
-
 use crate::workflow::config::WorkflowConfig;
 use crate::workflow::domain::Task;
 use crate::workflow::iteration::IterationService;
@@ -19,7 +17,6 @@ pub fn execute(
     content: &str,
     route_to: Option<&str>,
     now: &str,
-    project_root: Option<&Path>,
 ) -> WorkflowResult<Option<String>> {
     // Verify stage has approval capability
     let stage_config = workflow.stage(&task.flow, current_stage).ok_or_else(|| {
@@ -34,7 +31,9 @@ pub fn execute(
 
     match decision {
         "approve" => {
-            // Delegate to handle_artifact which stores the artifact and auto-advances.
+            // Approval implies an agentic gate — automated gates are mutually exclusive
+            // (enforced in spawn_one_gate). Pass false so handle_artifact does not
+            // re-enter AwaitingGate.
             super::handle_artifact::execute(
                 workflow,
                 iteration_service,
@@ -42,7 +41,7 @@ pub fn execute(
                 content,
                 current_stage,
                 now,
-                project_root,
+                false,
             )
         }
         "reject" => {

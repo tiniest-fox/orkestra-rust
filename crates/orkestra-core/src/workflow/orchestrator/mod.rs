@@ -661,41 +661,90 @@ impl OrchestratorLoop {
             None => return Ok(()),
         };
 
-        // Resolve gate config (flow-aware; technique checks override explicit gate when present)
-        let gate_config = {
+        // Clone stage config data inside the lock; do filesystem I/O outside.
+        let (techniques, existing_gate) = {
             let api = self.api.lock().map_err(|_| WorkflowError::Lock)?;
             let stage_config = api.workflow.stage(&task.flow, &stage);
+            match stage_config {
+                None => return Ok(()),
+                Some(sc) => (sc.techniques.clone(), sc.gate.clone()),
+            }
+        };
 
-            if let Some(sc) = stage_config {
-                if sc.techniques.is_empty() {
-                    sc.gate.clone()
-                } else {
-                    let project_root = self.project_root.as_ref().ok_or_else(|| {
-                        WorkflowError::InvalidState(
-                            "project_root required for technique resolution".into(),
-                        )
-                    })?;
-                    let resolved = load_and_resolve_techniques(project_root, &sc.techniques)
-                        .map_err(|e| {
-                            WorkflowError::InvalidState(format!("Technique resolution: {e}"))
-                        })?;
-                    let technique_gate = build_gate_from_checks(project_root, &resolved.checks)
-                        .map_err(|e| {
-                            WorkflowError::InvalidState(format!("Check resolution: {e}"))
-                        })?;
-
-                    match (technique_gate, sc.gate.as_ref()) {
-                        (Some(_), Some(GateConfig::Agentic)) => {
-                            return Err(WorkflowError::InvalidState(format!(
-                                "Stage '{stage}' has both technique checks and an agentic gate"
-                            )));
-                        }
-                        (Some(auto_gate), _) => Some(auto_gate),
-                        (None, existing) => existing.cloned(),
-                    }
+        // Resolve gate config (technique checks override explicit gate when present).
+        // I/O happens here, outside the mutex. Errors are converted to events so the
+        // tick loop stays healthy — the task remains in AwaitingGate until the config
+        // is fixed.
+        let gate_config = if techniques.is_empty() {
+            existing_gate
+        } else {
+            let Some(project_root) = self.project_root.as_ref() else {
+                let error = "project_root required for technique resolution".to_string();
+                orkestra_debug!(
+                    "orchestrator",
+                    "Gate config error for {}: {}",
+                    task.id,
+                    error
+                );
+                events.push(OrchestratorEvent::Error {
+                    task_id: Some(task.id.clone()),
+                    error,
+                });
+                return Ok(());
+            };
+            let resolved = match load_and_resolve_techniques(project_root, &techniques) {
+                Ok(r) => r,
+                Err(e) => {
+                    let error = format!("Technique resolution: {e}");
+                    orkestra_debug!(
+                        "orchestrator",
+                        "Gate config error for {}: {}",
+                        task.id,
+                        error
+                    );
+                    events.push(OrchestratorEvent::Error {
+                        task_id: Some(task.id.clone()),
+                        error,
+                    });
+                    return Ok(());
                 }
-            } else {
-                None
+            };
+            let technique_gate = match build_gate_from_checks(project_root, &resolved.checks) {
+                Ok(g) => g,
+                Err(e) => {
+                    let error = format!("Check resolution: {e}");
+                    orkestra_debug!(
+                        "orchestrator",
+                        "Gate config error for {}: {}",
+                        task.id,
+                        error
+                    );
+                    events.push(OrchestratorEvent::Error {
+                        task_id: Some(task.id.clone()),
+                        error,
+                    });
+                    return Ok(());
+                }
+            };
+
+            match (technique_gate, existing_gate.as_ref()) {
+                (Some(_), Some(GateConfig::Agentic)) => {
+                    let error =
+                        format!("Stage '{stage}' has both technique checks and an agentic gate");
+                    orkestra_debug!(
+                        "orchestrator",
+                        "Gate config error for {}: {}",
+                        task.id,
+                        error
+                    );
+                    events.push(OrchestratorEvent::Error {
+                        task_id: Some(task.id.clone()),
+                        error,
+                    });
+                    return Ok(());
+                }
+                (Some(auto_gate), _) => Some(auto_gate),
+                (None, existing) => existing.cloned(),
             }
         };
         let Some(gate_config) = gate_config else {

@@ -11216,15 +11216,77 @@ fn test_technique_with_empty_list_falls_back() {
     ctx.set_output(&task_id, MockAgentOutput::artifact("summary", "Work done"));
     ctx.advance(); // spawn worker
 
-    // No gate on the stage → task goes directly to AwaitingApproval
+    // No gate on the stage → task goes directly to AwaitingApproval (not Queued)
     let task = ctx.api().get_task(&task_id).unwrap();
     assert!(
-        matches!(
-            task.state,
-            TaskState::AwaitingApproval { .. } | TaskState::Queued { .. }
-        ),
-        "Stage with empty techniques and explicit prompt should use normal behavior, got {:?}",
+        matches!(task.state, TaskState::AwaitingApproval { .. }),
+        "Stage with empty techniques and explicit prompt should pause at AwaitingApproval, got {:?}",
         task.state
+    );
+}
+
+/// Verify that a stage with both technique checks and an agentic gate produces a clear
+/// error rather than leaving the task stuck in `AwaitingGate` with no recovery path.
+///
+/// This exercises the conflict-validation path in `spawn_one_gate`.
+#[test]
+fn test_technique_checks_and_agentic_gate_conflict_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Stage has BOTH a technique check AND gate: Agentic — mutually exclusive.
+    let workflow = WorkflowConfig::new(vec![StageConfig::new("work", "summary")
+        .with_techniques(vec!["conflict-technique".to_string()])
+        .with_gate(GateConfig::Agentic)]);
+
+    let ctx = TestEnv::with_git(&workflow, &[]);
+    let root = ctx.temp_dir().to_path_buf();
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::create_dir_all(&techniques_dir).unwrap();
+    std::fs::write(
+        techniques_dir.join("conflict-technique.md"),
+        "---\ntitle: Conflict Technique\ndescription: Has both check and agentic gate\ncheck: simple-check\n---\nDo work.",
+    )
+    .unwrap();
+
+    let checks_dir = root.join(".orkestra/checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let check_path = checks_dir.join("simple-check.sh");
+    std::fs::write(
+        &check_path,
+        "#!/bin/bash\n# ---\n# title: Simple Check\n# description: Always passes\n# timeout_seconds: 10\n# ---\nexit 0",
+    )
+    .unwrap();
+    std::fs::set_permissions(&check_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let task = ctx.create_task(
+        "Conflict test",
+        "Technique checks + agentic gate conflict",
+        None,
+    );
+    let task_id = task.id.clone();
+
+    // Agent produces an artifact — gate resolution (has_automated_gate=true due to technique
+    // check) transitions to AwaitingGate.
+    ctx.set_output(&task_id, MockAgentOutput::artifact("summary", "Work done"));
+    ctx.advance(); // spawn work agent → artifact → AwaitingGate
+
+    let task_after_work = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task_after_work.state, TaskState::AwaitingGate { .. }),
+        "Task should enter AwaitingGate before conflict is detected, got {:?}",
+        task_after_work.state
+    );
+
+    // Next tick: orchestrator calls spawn_one_gate → detects conflict → emits error event
+    // and returns Ok(()). The task stays in AwaitingGate (not silently advanced or failed).
+    ctx.advance();
+
+    let task_after_conflict = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task_after_conflict.state, TaskState::AwaitingGate { .. }),
+        "After conflict, task should remain AwaitingGate (gate not launched), got {:?}",
+        task_after_conflict.state
     );
 }
 

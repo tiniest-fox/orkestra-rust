@@ -1,14 +1,16 @@
 //! Handle artifact output: store artifact, check gate, auto-approve or await review.
 
-use std::path::Path;
-
-use crate::workflow::config::{load_and_resolve_techniques, GateConfig, WorkflowConfig};
+use crate::workflow::config::WorkflowConfig;
 use crate::workflow::domain::Task;
 use crate::workflow::iteration::IterationService;
-use crate::workflow::ports::{WorkflowError, WorkflowResult};
+use crate::workflow::ports::WorkflowResult;
 use crate::workflow::runtime::{Artifact, TaskState};
 use crate::workflow::stage::interactions as stage;
 
+/// Store an artifact and transition state based on the pre-resolved gate decision.
+///
+/// `has_automated_gate` must be resolved by the caller (see `dispatch_output`) to
+/// avoid duplicating gate logic and to keep this function free of filesystem I/O.
 pub fn execute(
     workflow: &WorkflowConfig,
     iteration_service: &IterationService,
@@ -16,39 +18,13 @@ pub fn execute(
     content: &str,
     stage_name: &str,
     now: &str,
-    project_root: Option<&Path>,
+    has_automated_gate: bool,
 ) -> WorkflowResult<Option<String>> {
     let artifact_name = stage::finalize_advancement::artifact_name_for_stage(
         workflow, &task.flow, stage_name, "artifact",
     );
     task.artifacts
         .set(Artifact::new(&artifact_name, content, stage_name, now));
-
-    // Determine if an automated gate applies — either explicitly configured or derived
-    // from technique checks. Agentic gates fall through to auto_advance_or_review.
-    let has_automated_gate = {
-        let stage_cfg = workflow.stage(&task.flow, stage_name);
-
-        let explicit_auto = stage_cfg
-            .and_then(|s| s.gate.as_ref())
-            .is_some_and(|g| matches!(g, GateConfig::Automated { .. }));
-
-        if explicit_auto {
-            true
-        } else if let (Some(root), Some(sc)) = (project_root, stage_cfg) {
-            // Technique-derived gate: resolve to find out if any technique specifies a check.
-            if sc.techniques.is_empty() {
-                false
-            } else {
-                !load_and_resolve_techniques(root, &sc.techniques)
-                    .map_err(|e| WorkflowError::InvalidState(format!("Technique resolution: {e}")))?
-                    .checks
-                    .is_empty()
-            }
-        } else {
-            false
-        }
-    };
 
     if has_automated_gate {
         task.state = TaskState::awaiting_gate(stage_name);

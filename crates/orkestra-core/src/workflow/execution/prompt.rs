@@ -193,7 +193,12 @@ pub fn resolve_stage_agent_config_for(
         load_agent_definition(project_root, &definition_path)
             .map_err(|e| AgentConfigError::DefinitionNotFound(e.to_string()))?
     } else {
-        load_and_resolve_techniques(project_root.unwrap_or(Path::new(".")), &stage.techniques)
+        let root = project_root.ok_or_else(|| {
+            AgentConfigError::DefinitionNotFound(
+                "project_root required for technique resolution".into(),
+            )
+        })?;
+        load_and_resolve_techniques(root, &stage.techniques)
             .map(|r| r.prompt_body)
             .map_err(|e| {
                 AgentConfigError::DefinitionNotFound(format!("Technique resolution: {e}"))

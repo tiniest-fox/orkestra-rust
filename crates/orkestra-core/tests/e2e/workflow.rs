@@ -10741,3 +10741,111 @@ fn opencode_token_usage_persisted_and_queryable() {
         "expected total_cost ~0.13, got {total_cost}"
     );
 }
+
+#[test]
+fn test_technique_based_stage_execution() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workflow = WorkflowConfig::new(vec![
+        StageConfig::new("work", "summary").with_techniques(vec![
+            "test-technique".to_string(),
+            "test-conventions".to_string(),
+        ]),
+        StageConfig::new("review", "verdict").with_prompt("reviewer.md"),
+    ]);
+
+    // Only reviewer needs a file — work stage uses technique bodies instead
+    let ctx = TestEnv::with_git(&workflow, &["reviewer"]);
+    let root = ctx.temp_dir().to_path_buf();
+
+    // Create technique files
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::create_dir_all(&techniques_dir).unwrap();
+    std::fs::write(
+        techniques_dir.join("test-technique.md"),
+        "---\ntitle: Test Technique\ndescription: A test technique\nmodel: sonnet\ncheck: test-check\n---\nYou are a work agent using test-technique.",
+    )
+    .unwrap();
+    std::fs::write(
+        techniques_dir.join("test-conventions.md"),
+        "---\ntitle: Test Conventions\ndescription: Conventions for testing\ndisallowed_tools:\n  - pattern: Edit\n    message: Use Write instead\n---\nFollow these conventions.",
+    )
+    .unwrap();
+
+    // Create check script
+    let checks_dir = root.join(".orkestra/checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let check_path = checks_dir.join("test-check.sh");
+    std::fs::write(
+        &check_path,
+        "#!/bin/bash\n# ---\n# title: Test Check\n# description: Test check script\n# timeout_seconds: 10\n# ---\nexit 0",
+    )
+    .unwrap();
+    std::fs::set_permissions(&check_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Create models.yaml
+    let models_path = root.join(".orkestra/models.yaml");
+    std::fs::write(
+        &models_path,
+        "default: sonnet\nranked:\n  - opus\n  - sonnet\n  - haiku\n",
+    )
+    .unwrap();
+
+    // Create task
+    let task = ctx.create_task("Technique test", "Test technique-based execution", None);
+    let task_id = task.id.clone();
+
+    assert_eq!(task.current_stage(), Some("work"));
+    assert!(matches!(task.state, TaskState::Queued { .. }));
+
+    // Work stage: set output and advance
+    ctx.set_output(
+        &task_id,
+        MockAgentOutput::Artifact {
+            name: "summary".to_string(),
+            content: "Work done via techniques".to_string(),
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    ctx.advance(); // spawns work agent → drain_active → artifact processed → AwaitingGate
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingGate { .. }),
+        "Task should be AwaitingGate after work output with technique checks"
+    );
+
+    // Gate runs (test-check.sh exits 0)
+    ctx.set_output(
+        &task_id,
+        MockAgentOutput::Artifact {
+            name: "verdict".to_string(),
+            content: "Approved".to_string(),
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    ctx.advance(); // spawns gate → drain_active → gate passes → AwaitingApproval
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingApproval { .. }),
+        "Task should be AwaitingApproval after gate passes, got {:?}",
+        task.state
+    );
+
+    // Approve and advance through review
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance(); // commit pipeline → review Queued
+    ctx.advance(); // spawns reviewer → drain_active → review output → AwaitingApproval
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance(); // commit pipeline → Done/Archived
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        task.is_done() || task.is_archived(),
+        "Task should be done/archived after successful technique-based execution, got {:?}",
+        task.state
+    );
+}

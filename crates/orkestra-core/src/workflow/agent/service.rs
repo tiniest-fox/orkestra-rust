@@ -57,6 +57,7 @@ impl WorkflowApi {
             &self.iteration_service,
             task_id,
             output,
+            self.project_root.as_deref(),
         )
     }
 

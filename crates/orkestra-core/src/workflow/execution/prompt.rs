@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use crate::workflow::config::{StageConfig, WorkflowConfig};
+use crate::workflow::config::{load_and_resolve_techniques, StageConfig, WorkflowConfig};
 use crate::workflow::domain::Task;
 use orkestra_types::config::VIBE_STAGE;
 use orkestra_types::runtime::ResourceStore;
@@ -185,13 +185,20 @@ pub fn resolve_stage_agent_config_for(
             .ok_or_else(|| AgentConfigError::UnknownStage(stage_name.to_string()))?
     };
 
-    // I/O: Load agent definition from disk
-    let definition_path = stage
-        .prompt_path()
-        .unwrap_or_else(|| format!("{stage_name}.md"));
-
-    let agent_def = load_agent_definition(project_root, &definition_path)
-        .map_err(|e| AgentConfigError::DefinitionNotFound(e.to_string()))?;
+    // I/O: Load agent definition — technique bodies replace the file when present.
+    let agent_def = if stage.techniques.is_empty() {
+        let definition_path = stage
+            .prompt_path()
+            .unwrap_or_else(|| format!("{stage_name}.md"));
+        load_agent_definition(project_root, &definition_path)
+            .map_err(|e| AgentConfigError::DefinitionNotFound(e.to_string()))?
+    } else {
+        load_and_resolve_techniques(project_root.unwrap_or(Path::new(".")), &stage.techniques)
+            .map(|r| r.prompt_body)
+            .map_err(|e| {
+                AgentConfigError::DefinitionNotFound(format!("Technique resolution: {e}"))
+            })?
+    };
 
     // I/O: Get JSON schema (may load custom schema from disk)
     let json_schema = if stage_name == VIBE_STAGE {

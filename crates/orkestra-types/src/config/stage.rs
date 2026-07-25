@@ -131,6 +131,14 @@ pub struct StageConfig {
         deserialize_with = "deserialize_gate_option"
     )]
     pub gate: Option<GateConfig>,
+
+    /// Techniques to apply for this stage.
+    ///
+    /// When non-empty, technique files are loaded from `.orkestra/techniques/{name}.md`
+    /// and their frontmatter is merged to resolve model, `disallowed_tools`, checks, and
+    /// prompt body. Overrides `prompt`, `model`, and `disallowed_tools` when present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub techniques: Vec<String>,
 }
 
 impl StageConfig {
@@ -146,6 +154,7 @@ impl StageConfig {
             model: None,
             disallowed_tools: Vec::new(),
             gate: None,
+            techniques: Vec::new(),
         }
     }
 
@@ -195,6 +204,13 @@ impl StageConfig {
     #[must_use]
     pub fn with_gate(mut self, gate: GateConfig) -> Self {
         self.gate = Some(gate);
+        self
+    }
+
+    /// Builder: set technique names for this stage.
+    #[must_use]
+    pub fn with_techniques(mut self, techniques: Vec<String>) -> Self {
+        self.techniques = techniques;
         self
     }
 

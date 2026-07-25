@@ -32,7 +32,9 @@ use crate::orkestra_debug;
 use crate::workflow::agent::interactions as agent_interactions;
 use crate::workflow::api::WorkflowApi;
 use crate::workflow::auto_resolve::interactions as auto_resolve_interactions;
-use crate::workflow::config::WorkflowConfig;
+use crate::workflow::config::{
+    build_gate_from_checks, load_and_resolve_techniques, WorkflowConfig,
+};
 use crate::workflow::domain::{LogEntry, TaskHeader, TickSnapshot};
 use crate::workflow::integration::interactions as integration_interactions;
 use crate::workflow::ports::{GitService, PrMonitor, WorkflowError, WorkflowResult, WorkflowStore};
@@ -40,6 +42,7 @@ use crate::workflow::runtime::TaskState;
 use crate::workflow::stage::interactions as stage_interactions;
 use crate::workflow::stage::service::StageExecutionService;
 use crate::workflow::task::interactions as task_interactions;
+use orkestra_types::config::GateConfig;
 
 // ============================================================================
 // Orchestrator Events
@@ -658,12 +661,42 @@ impl OrchestratorLoop {
             None => return Ok(()),
         };
 
-        // Resolve gate config (flow-aware)
+        // Resolve gate config (flow-aware; technique checks override explicit gate when present)
         let gate_config = {
             let api = self.api.lock().map_err(|_| WorkflowError::Lock)?;
-            api.workflow
-                .stage(&task.flow, &stage)
-                .and_then(|s| s.gate.clone())
+            let stage_config = api.workflow.stage(&task.flow, &stage);
+
+            if let Some(sc) = stage_config {
+                if sc.techniques.is_empty() {
+                    sc.gate.clone()
+                } else {
+                    let project_root = self.project_root.as_ref().ok_or_else(|| {
+                        WorkflowError::InvalidState(
+                            "project_root required for technique resolution".into(),
+                        )
+                    })?;
+                    let resolved = load_and_resolve_techniques(project_root, &sc.techniques)
+                        .map_err(|e| {
+                            WorkflowError::InvalidState(format!("Technique resolution: {e}"))
+                        })?;
+                    let technique_gate = build_gate_from_checks(project_root, &resolved.checks)
+                        .map_err(|e| {
+                            WorkflowError::InvalidState(format!("Check resolution: {e}"))
+                        })?;
+
+                    match (technique_gate, sc.gate.as_ref()) {
+                        (Some(_), Some(GateConfig::Agentic)) => {
+                            return Err(WorkflowError::InvalidState(format!(
+                                "Stage '{stage}' has both technique checks and an agentic gate"
+                            )));
+                        }
+                        (Some(auto_gate), _) => Some(auto_gate),
+                        (None, existing) => existing.cloned(),
+                    }
+                }
+            } else {
+                None
+            }
         };
         let Some(gate_config) = gate_config else {
             orkestra_debug!(

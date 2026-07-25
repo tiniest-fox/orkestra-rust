@@ -117,6 +117,7 @@ pub(crate) fn execute(
 
     // 4. Build system prompt (needed for BOTH fresh and resume)
     // System prompt may contain Handlebars conditionals that need feedback context
+    let technique_agent_def = resolved_techniques.as_ref().map(|r| r.prompt_body.as_str());
     let system_prompt = build_system_prompt(
         prompt_service,
         workflow,
@@ -126,13 +127,12 @@ pub(crate) fn execute(
         resolved.capabilities.requires_direct_structured_output,
         sibling_tasks,
         parent_resources,
+        technique_agent_def,
     )?;
 
     // 5. Apply tool restrictions (split into prompt text + CLI patterns)
-    let technique_tools_owned: Vec<ToolRestriction>;
     let effective_tools: &[ToolRestriction] = if let Some(ref resolved) = resolved_techniques {
-        technique_tools_owned = resolved.disallowed_tools.clone();
-        &technique_tools_owned
+        &resolved.disallowed_tools
     } else {
         stage_config.map_or(&[] as &[ToolRestriction], |s| s.disallowed_tools.as_slice())
     };
@@ -151,6 +151,7 @@ pub(crate) fn execute(
         resolved.capabilities.requires_direct_structured_output,
         sibling_tasks,
         parent_resources,
+        technique_agent_def,
     )?;
 
     // 6b. For vibe stage, append valid exit destinations so the agent knows where it can route.
@@ -315,6 +316,7 @@ fn build_system_prompt(
     show_direct_structured_output_hint: bool,
     sibling_tasks: &[SiblingTaskContext],
     parent_resources: Option<&ResourceStore>,
+    pre_resolved_agent_def: Option<&str>,
 ) -> Result<String, ExecutionError> {
     let config = prompt_service.resolve_config(
         workflow,
@@ -325,6 +327,7 @@ fn build_system_prompt(
         show_direct_structured_output_hint,
         sibling_tasks,
         parent_resources,
+        pre_resolved_agent_def,
     )?;
     Ok(config.system_prompt)
 }
@@ -345,6 +348,7 @@ fn build_user_prompt(
     show_direct_structured_output_hint: bool,
     sibling_tasks: &[SiblingTaskContext],
     parent_resources: Option<&ResourceStore>,
+    pre_resolved_agent_def: Option<&str>,
 ) -> Result<(String, Vec<PromptSection>), ExecutionError> {
     if is_resume {
         let resume_type = trigger_to_resume_type(trigger);
@@ -373,6 +377,7 @@ fn build_user_prompt(
             show_direct_structured_output_hint,
             sibling_tasks,
             parent_resources,
+            pre_resolved_agent_def,
         )?;
         Ok((config.prompt, config.dynamic_sections))
     }

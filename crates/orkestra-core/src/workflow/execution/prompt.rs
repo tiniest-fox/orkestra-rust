@@ -174,6 +174,7 @@ pub fn resolve_stage_agent_config_for(
     show_direct_structured_output_hint: bool,
     sibling_tasks: &[SiblingTaskContext],
     parent_resources: Option<&ResourceStore>,
+    pre_resolved_agent_def: Option<&str>,
 ) -> Result<ResolvedAgentConfig, AgentConfigError> {
     let vibe_config;
     let stage = if stage_name == VIBE_STAGE {
@@ -192,6 +193,8 @@ pub fn resolve_stage_agent_config_for(
             .unwrap_or_else(|| format!("{stage_name}.md"));
         load_agent_definition(project_root, &definition_path)
             .map_err(|e| AgentConfigError::DefinitionNotFound(e.to_string()))?
+    } else if let Some(body) = pre_resolved_agent_def {
+        body.to_string()
     } else {
         let root = project_root.ok_or_else(|| {
             AgentConfigError::DefinitionNotFound(
@@ -831,6 +834,7 @@ mod tests {
             None,
             false,
             &[],
+            None,
             None,
         )
         .unwrap();

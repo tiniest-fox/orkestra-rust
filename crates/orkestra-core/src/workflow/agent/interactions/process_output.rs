@@ -307,8 +307,13 @@ fn resolve_has_automated_gate(
         return Ok(true);
     }
 
-    if let (Some(root), Some(sc)) = (project_root, stage_cfg) {
+    if let Some(sc) = stage_cfg {
         if !sc.techniques.is_empty() {
+            let root = project_root.ok_or_else(|| {
+                WorkflowError::InvalidState(
+                    "project_root required for technique gate resolution".into(),
+                )
+            })?;
             let resolved = load_and_resolve_techniques(root, &sc.techniques)
                 .map_err(|e| WorkflowError::InvalidState(format!("Technique resolution: {e}")))?;
             return Ok(!resolved.checks.is_empty());

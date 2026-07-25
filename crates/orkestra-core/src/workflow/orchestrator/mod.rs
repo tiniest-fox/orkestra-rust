@@ -621,6 +621,23 @@ impl OrchestratorLoop {
         Ok(())
     }
 
+    /// Emit a gate configuration error event and log it.
+    ///
+    /// Used in `spawn_one_gate` when gate resolution fails. The task stays in
+    /// `AwaitingGate` until the configuration is fixed.
+    fn push_gate_error(task_id: &str, error: String, events: &mut Vec<OrchestratorEvent>) {
+        orkestra_debug!(
+            "orchestrator",
+            "Gate config error for {}: {}",
+            task_id,
+            error
+        );
+        events.push(OrchestratorEvent::Error {
+            task_id: Some(task_id.to_string()),
+            error,
+        });
+    }
+
     /// Spawn gate scripts for tasks in `AwaitingGate` state.
     ///
     /// For each task, looks up the gate config, transitions to `GateRunning`, then
@@ -679,68 +696,35 @@ impl OrchestratorLoop {
             existing_gate
         } else {
             let Some(project_root) = self.project_root.as_ref() else {
-                let error = "project_root required for technique resolution".to_string();
-                orkestra_debug!(
-                    "orchestrator",
-                    "Gate config error for {}: {}",
-                    task.id,
-                    error
+                Self::push_gate_error(
+                    &task.id,
+                    "project_root required for technique resolution".to_string(),
+                    events,
                 );
-                events.push(OrchestratorEvent::Error {
-                    task_id: Some(task.id.clone()),
-                    error,
-                });
                 return Ok(());
             };
             let resolved = match load_and_resolve_techniques(project_root, &techniques) {
                 Ok(r) => r,
                 Err(e) => {
-                    let error = format!("Technique resolution: {e}");
-                    orkestra_debug!(
-                        "orchestrator",
-                        "Gate config error for {}: {}",
-                        task.id,
-                        error
-                    );
-                    events.push(OrchestratorEvent::Error {
-                        task_id: Some(task.id.clone()),
-                        error,
-                    });
+                    Self::push_gate_error(&task.id, format!("Technique resolution: {e}"), events);
                     return Ok(());
                 }
             };
             let technique_gate = match build_gate_from_checks(project_root, &resolved.checks) {
                 Ok(g) => g,
                 Err(e) => {
-                    let error = format!("Check resolution: {e}");
-                    orkestra_debug!(
-                        "orchestrator",
-                        "Gate config error for {}: {}",
-                        task.id,
-                        error
-                    );
-                    events.push(OrchestratorEvent::Error {
-                        task_id: Some(task.id.clone()),
-                        error,
-                    });
+                    Self::push_gate_error(&task.id, format!("Check resolution: {e}"), events);
                     return Ok(());
                 }
             };
 
             match (technique_gate, existing_gate.as_ref()) {
                 (Some(_), Some(GateConfig::Agentic)) => {
-                    let error =
-                        format!("Stage '{stage}' has both technique checks and an agentic gate");
-                    orkestra_debug!(
-                        "orchestrator",
-                        "Gate config error for {}: {}",
-                        task.id,
-                        error
+                    Self::push_gate_error(
+                        &task.id,
+                        format!("Stage '{stage}' has both technique checks and an agentic gate"),
+                        events,
                     );
-                    events.push(OrchestratorEvent::Error {
-                        task_id: Some(task.id.clone()),
-                        error,
-                    });
                     return Ok(());
                 }
                 (Some(auto_gate), _) => Some(auto_gate),

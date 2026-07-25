@@ -5,7 +5,7 @@
 
 mod auto_task;
 mod loader;
-pub mod technique;
+pub(crate) mod technique;
 
 /// Split a markdown file into YAML frontmatter and body.
 ///

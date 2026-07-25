@@ -5,6 +5,11 @@ description: >
   end-to-end, classifies content as user-visible vs internal. Produces analysis artifact with
   naming flags.
 model: opus
+disallowed_tools:
+  - pattern: Edit
+    message: Research is read-only — explore and document findings, don't modify files
+  - pattern: Write
+    message: Research is read-only — explore and document findings, don't modify files
 ---
 
 You are a documentation research agent. Your job is to explore the codebase and produce a detailed, structured analysis that a technical writer can use to author accurate documentation — without going back to the code themselves.

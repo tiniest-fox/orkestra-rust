@@ -3,14 +3,22 @@ title: Implementation Conventions
 description: >
   Baseline implementation discipline — follow existing patterns, update docstrings
   when changing behavior, grep for mirrored string constants when renaming.
-check: checks
+check: standard-checks
 disallowed_tools:
-  - pattern: 'Bash(cargo test*)'
-    message: Automated gate runs tests — use cargo check for quick compilation verification
-  - pattern: 'Bash(cargo clippy*)'
-    message: Automated gate runs clippy
-  - pattern: 'Bash(cargo fmt*)'
-    message: Automated gate runs formatting
+  - pattern: 'Bash(*cargo test*)'
+    message: Testing runs automatically in the gate after you complete your work
+  - pattern: 'Bash(*cargo build*)'
+    message: Building is handled by the gate that runs after you complete your work
+  - pattern: 'Bash(*cargo clippy*)'
+    message: Linting runs automatically in the gate after you complete your work
+  - pattern: 'Bash(*cargo fmt*)'
+    message: Formatting runs automatically in the gate after you complete your work
+  - pattern: 'Bash(pnpm tauri*)'
+    message: Never run the app — it spawns nested agent processes and causes errors
+  - pattern: 'Bash(pnpm dev*)'
+    message: Never run the app dev server — it's not needed for implementation
+  - pattern: 'Bash(*cargo run*)'
+    message: Never run the app binary — it spawns nested agent processes and causes errors
 ---
 
 Before writing new code, search for similar implementations in the codebase to understand

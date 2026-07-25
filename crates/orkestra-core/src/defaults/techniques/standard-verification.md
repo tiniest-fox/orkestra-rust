@@ -3,7 +3,7 @@ title: Standard Verification
 description: >
   Test writing guidance — regression tests for bug fixes, branch coverage
   for conditional logic, integration tests for cross-module flows.
-check: checks
+check: standard-checks
 ---
 
 Bug fixes in pure functions always need a regression test. Write at least one test

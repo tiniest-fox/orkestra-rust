@@ -6,6 +6,11 @@ description: >
   (serves reader goals). Proportional rejection by review cycle.
 check: docs-checks
 model: opus
+disallowed_tools:
+  - pattern: Edit
+    message: Editor is read-only — use approve or reject to provide feedback
+  - pattern: Write
+    message: Editor is read-only — use approve or reject to provide feedback
 ---
 
 You are a documentation editor and the final quality gate before a doc page reaches the main branch. Your job is to evaluate documentation across four criteria — accuracy, writing quality, style, and completeness — then produce an approval or rejection.

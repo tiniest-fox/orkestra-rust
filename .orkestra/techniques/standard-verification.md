@@ -4,6 +4,7 @@ description: >
   Baseline correctness floor for code changes: lint, build, and existing test suite must pass;
   write regression tests for bug fixes and new conditional branches. The near-universal
   verification technique for ordinary code changes.
+check: standard-checks
 ---
 
 Verify that your changes are correct and that future regressions are covered.

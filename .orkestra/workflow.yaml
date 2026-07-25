@@ -11,14 +11,14 @@ flows:
       - name: plan
         description: Produces a high-level implementation plan for the feature
         artifact: plan
-        prompt: planner.md
-        model: opus
+        techniques:
+          - requirements-discovery
 
       - name: task
         description: Breaks down the plan into actionable subtasks with technical and implementation guidance
         artifact: breakdown
-        prompt: breakdown.md
-        model: opus
+        techniques:
+          - vertical-slice-decomposition
         capabilities:
           subtasks:
             flow: hotfix
@@ -27,43 +27,23 @@ flows:
         name: work
         description: Implements the approved plan and produces a work summary
         artifact: summary
-        prompt: worker.md
-        model: sonnet
-        gate:
-          command: "$ORKESTRA_PROJECT_ROOT/.orkestra/scripts/checks.sh"
-          timeout_seconds: 1200
-        disallowed_tools:
-          - pattern: "Bash(*cargo test*)"
-            message: "Testing runs automatically in the gate after you complete your work"
-          - pattern: "Bash(*cargo build*)"
-            message: "Building is handled by the gate that runs after you complete your work"
-          - pattern: "Bash(*cargo clippy*)"
-            message: "Linting runs automatically in the gate after you complete your work"
-          - pattern: "Bash(*cargo fmt*)"
-            message: "Formatting runs automatically in the gate after you complete your work"
-          - pattern: "Bash(pnpm tauri*)"
-            message: "Never run the app — it spawns nested agent processes and causes errors"
-          - pattern: "Bash(pnpm dev*)"
-            message: "Never run the app dev server — it's not needed for implementation"
-          - pattern: "Bash(*cargo run*)"
-            message: "Never run the app binary — it spawns nested agent processes and causes errors"
+        techniques:
+          - implementation-conventions
+          - standard-verification
 
       - name: review
         description: Reviews completed work and produces an approval or rejection verdict
         artifact: verdict
-        prompt: reviewer.md
-        model: opus
-        disallowed_tools:
-          - pattern: "Bash(*cargo *)"
-            message: "All automated checks have passed and all tests pass as-is — focus on code review, not re-running checks"
+        techniques:
+          - standard-review
         gate: true
 
       - &compound_stage
         name: compound
         description: Captures key learnings and produces updated documentation
         artifact: learnings
-        prompt: compound.md
-        model: sonnet
+        techniques:
+          - compound-learning-capture
 
     integration:
       on_failure: task
@@ -73,14 +53,14 @@ flows:
       - name: plan
         description: Produces a high-level implementation plan for the feature
         artifact: plan
-        prompt: quick_planner.md
-        model: opus
+        techniques:
+          - requirements-discovery
       - *work_stage
       - name: review
         description: Reviews completed work and produces an approval or rejection verdict
         artifact: verdict
-        prompt: reviewer.md
-        model: opus
+        techniques:
+          - standard-review
         gate: true
       - *compound_stage
     integration:
@@ -91,31 +71,14 @@ flows:
       - name: work
         description: Implements the approved plan and produces a work summary
         artifact: summary
-        prompt: worker.md
-        model: sonnet
-        gate:
-          command: "$ORKESTRA_PROJECT_ROOT/.orkestra/scripts/checks-lite.sh"
-          timeout_seconds: 1200
-        disallowed_tools:
-          - pattern: "Bash(*cargo test*)"
-            message: "Testing runs automatically in the gate after you complete your work"
-          - pattern: "Bash(*cargo build*)"
-            message: "Building is handled by the gate that runs after you complete your work"
-          - pattern: "Bash(*cargo clippy*)"
-            message: "Linting runs automatically in the gate after you complete your work"
-          - pattern: "Bash(*cargo fmt*)"
-            message: "Formatting runs automatically in the gate after you complete your work"
-          - pattern: "Bash(pnpm tauri*)"
-            message: "Never run the app — it spawns nested agent processes and causes errors"
-          - pattern: "Bash(pnpm dev*)"
-            message: "Never run the app dev server — it's not needed for implementation"
-          - pattern: "Bash(*cargo run*)"
-            message: "Never run the app binary — it spawns nested agent processes and causes errors"
+        techniques:
+          - implementation-conventions
+          - standard-verification
       - name: review
         description: Reviews completed work and produces an approval or rejection verdict
         artifact: verdict
-        prompt: subtask-reviewer.md
-        model: opus
+        techniques:
+          - standard-review
         gate: true
     integration:
       on_failure: work
@@ -125,11 +88,9 @@ flows:
       - name: work
         description: Implements the approved plan and produces a work summary
         artifact: summary
-        prompt: worker.md
-        model: sonnet
-        gate:
-          command: "$ORKESTRA_PROJECT_ROOT/.orkestra/scripts/checks-lite.sh"
-          timeout_seconds: 1200
+        techniques:
+          - implementation-conventions
+          - standard-verification
     integration:
       on_failure: work
 
@@ -138,20 +99,20 @@ flows:
       - name: requirements
         description: Gathers requirements about what to change in the prompt and why, researches best practices
         artifact: requirements
-        prompt: prompt_requirements.md
-        model: opus
+        techniques:
+          - prompt-investigation
 
       - name: write
         description: Implements the prompt changes based on the requirements
         artifact: summary
-        prompt: prompt_writer.md
-        model: sonnet
+        techniques:
+          - prompt-writing
 
       - name: review
         description: Reviews the revised prompt for consistency, coverage, and prompt engineering best practices
         artifact: verdict
-        prompt: prompt_reviewer.md
-        model: opus
+        techniques:
+          - prompt-review
         gate: true
     integration:
       on_failure: write
@@ -168,46 +129,33 @@ flows:
       - name: research
         description: Explores the codebase and produces a detailed analysis to guide documentation
         artifact: analysis
-        prompt: researcher.md
-        model: opus
-        disallowed_tools:
-          - pattern: "Edit"
-            message: "Research is read-only — explore and document findings, don't modify files"
-          - pattern: "Write"
-            message: "Research is read-only — explore and document findings, don't modify files"
+        techniques:
+          - docs-research
 
       # Write: author MDX documentation from the research analysis.
       # Gate runs docs checks to catch lint/type errors before the edit stage.
       - name: write
         description: Authors MDX documentation in docs/src/content/docs/ based on the research analysis
         artifact: draft
-        prompt: writer.md
-        model: sonnet
-        gate:
-          command: "$ORKESTRA_PROJECT_ROOT/.orkestra/scripts/checks-docs.sh"
-          timeout_seconds: 300
+        techniques:
+          - docs-writing
 
       # Edit: review documentation for accuracy, writing quality, and style.
       # On rejection, sends the Trak back to the write stage with feedback.
       - name: edit
         description: Reviews documentation for technical accuracy, writing quality, and style adherence
         artifact: verdict
-        prompt: editor.md
-        model: opus
+        techniques:
+          - docs-editorial-review
         gate: true
-        disallowed_tools:
-          - pattern: "Edit"
-            message: "Editor is read-only — use approve or reject to provide feedback"
-          - pattern: "Write"
-            message: "Editor is read-only — use approve or reject to provide feedback"
 
       # Compound: capture improvements to editorial guidelines and agent prompts.
       # Runs automatically after a doc is approved.
       - name: compound
         description: Captures learnings from the completed Trak to improve future documentation work
         artifact: learnings
-        prompt: compound-docs.md
-        model: sonnet
+        techniques:
+          - compound-docs-learning-capture
 
     integration:
       on_failure: write
@@ -222,23 +170,21 @@ flows:
       - name: spec
         description: Defines the component's purpose, props, visual design, and usage examples based on the request
         artifact: spec
-        prompt: planner.md
-        model: opus
+        techniques:
+          - requirements-discovery
 
       - name: build
         description: Implements the Astro component and updates docs/editorial/components.md
         artifact: summary
-        prompt: worker.md
-        model: sonnet
-        gate:
-          command: "$ORKESTRA_PROJECT_ROOT/.orkestra/scripts/checks-docs.sh"
-          timeout_seconds: 300
+        techniques:
+          - implementation-conventions
+          - standard-verification
 
       - name: review
         description: Reviews the component for correctness, design system adherence, and documentation quality
         artifact: verdict
-        prompt: reviewer.md
-        model: opus
+        techniques:
+          - standard-review
         gate: true
 
     integration:
@@ -255,56 +201,22 @@ flows:
       - name: investigate
         description: Researches the bug, identifies the root cause, and writes a failing test that demonstrates it
         artifact: investigation
-        prompt: investigator.md
-        model: opus
-        gate:
-          command: "$ORKESTRA_PROJECT_ROOT/.orkestra/scripts/checks-expect-test-failure.sh"
-          timeout_seconds: 1200
-        disallowed_tools:
-          - pattern: "Bash(*cargo test*)"
-            message: "Testing runs automatically in the gate after you complete your work"
-          - pattern: "Bash(*cargo build*)"
-            message: "Building is handled by the gate that runs after you complete your work"
-          - pattern: "Bash(*cargo clippy*)"
-            message: "Linting runs automatically in the gate after you complete your work"
-          - pattern: "Bash(*cargo fmt*)"
-            message: "Formatting runs automatically in the gate after you complete your work"
-          - pattern: "Bash(pnpm tauri*)"
-            message: "Never run the app — it spawns nested agent processes and causes errors"
-          - pattern: "Bash(pnpm dev*)"
-            message: "Never run the app dev server — it's not needed for implementation"
-          - pattern: "Bash(*cargo run*)"
-            message: "Never run the app binary — it spawns nested agent processes and causes errors"
+        techniques:
+          - red-green-investigation
 
       - name: fix
         description: Implements the minimal code change to make the failing test pass
         artifact: summary
-        prompt: bugfix_worker.md
-        model: sonnet
-        gate:
-          command: "$ORKESTRA_PROJECT_ROOT/.orkestra/scripts/checks.sh"
-          timeout_seconds: 1200
-        disallowed_tools:
-          - pattern: "Bash(*cargo test*)"
-            message: "Testing runs automatically in the gate after you complete your work"
-          - pattern: "Bash(*cargo build*)"
-            message: "Building is handled by the gate that runs after you complete your work"
-          - pattern: "Bash(*cargo clippy*)"
-            message: "Linting runs automatically in the gate after you complete your work"
-          - pattern: "Bash(*cargo fmt*)"
-            message: "Formatting runs automatically in the gate after you complete your work"
-          - pattern: "Bash(pnpm tauri*)"
-            message: "Never run the app — it spawns nested agent processes and causes errors"
-          - pattern: "Bash(pnpm dev*)"
-            message: "Never run the app dev server — it's not needed for implementation"
-          - pattern: "Bash(*cargo run*)"
-            message: "Never run the app binary — it spawns nested agent processes and causes errors"
+        techniques:
+          - implementation-conventions
+          - regression-safety
+          - standard-verification
 
       - name: review
         description: Reviews completed work and produces an approval or rejection verdict
         artifact: verdict
-        prompt: reviewer.md
-        model: opus
+        techniques:
+          - standard-review
         gate: true
 
     integration:

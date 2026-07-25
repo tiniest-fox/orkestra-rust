@@ -11,6 +11,8 @@ const DEFAULT_WORKFLOW: &str = include_str!("defaults/workflow.yaml");
 const DEFAULT_README: &str = include_str!("defaults/README.md");
 const DEFAULT_ORKESTRA: &str = include_str!("defaults/ORKESTRA.md");
 
+const DEFAULT_MODELS_YAML: &str = "default: sonnet\nranked:\n  - opus\n  - sonnet\n";
+
 const DEFAULT_PROMPTS: &[(&str, &str)] = &[
     ("planner.md", include_str!("defaults/agents/planner.md")),
     ("breakdown.md", include_str!("defaults/agents/breakdown.md")),
@@ -40,7 +42,14 @@ const DEFAULT_TECHNIQUES: &[(&str, &str)] = &[
 ];
 
 /// Subdirectories created inside `.orkestra/` on init.
-const ORKESTRA_SUBDIRS: &[&str] = &[".database", ".logs", "scripts", "agents", "techniques"];
+const ORKESTRA_SUBDIRS: &[&str] = &[
+    ".database",
+    ".logs",
+    "scripts",
+    "agents",
+    "techniques",
+    "checks",
+];
 
 /// Lines that must appear in the project's `.gitignore`.
 const REQUIRED_GITIGNORE_ENTRIES: &[&str] = &[
@@ -87,6 +96,9 @@ pub fn ensure_orkestra_project(orkestra_dir: &Path) -> std::io::Result<()> {
     for (filename, content) in DEFAULT_TECHNIQUES {
         write_default(orkestra_dir, &format!("techniques/{filename}"), content)?;
     }
+
+    write_default_executable(orkestra_dir, "checks/standard-checks.sh", DEFAULT_CHECKS)?;
+    write_default(orkestra_dir, "models.yaml", DEFAULT_MODELS_YAML)?;
 
     if first_init {
         ensure_gitignore_entries(orkestra_dir)?;
@@ -259,19 +271,51 @@ mod tests {
     }
 
     #[test]
-    fn test_default_workflow_parses_with_gate() {
+    fn test_default_workflow_parses_with_techniques() {
         let config: crate::workflow::config::WorkflowConfig =
             serde_yaml::from_str(DEFAULT_WORKFLOW).expect("Default workflow.yaml should parse");
 
-        // Verify gate on work stage (check in the default flow)
+        // Verify work stage uses techniques (no explicit gate — gate derived from technique checks)
         let work_stage = config
             .stage("default", "work")
             .expect("Should have work stage in default flow");
-        assert!(work_stage.gate.is_some(), "Work stage should have a gate");
-        let gate = work_stage.gate.as_ref().unwrap();
         assert!(
-            matches!(gate, crate::workflow::config::GateConfig::Automated { command, .. } if command.contains("checks.sh")),
-            "Gate should reference checks.sh"
+            !work_stage.techniques.is_empty(),
+            "Work stage should have techniques"
+        );
+        assert!(
+            work_stage
+                .techniques
+                .contains(&"implementation-conventions".to_string()),
+            "Work stage should include implementation-conventions technique"
+        );
+        assert!(
+            work_stage
+                .techniques
+                .contains(&"standard-verification".to_string()),
+            "Work stage should include standard-verification technique"
+        );
+
+        // Verify review stage uses techniques and keeps agentic gate
+        let review_stage = config
+            .stage("default", "review")
+            .expect("Should have review stage in default flow");
+        assert!(
+            !review_stage.techniques.is_empty(),
+            "Review stage should have techniques"
+        );
+        assert!(
+            review_stage
+                .techniques
+                .contains(&"standard-review".to_string()),
+            "Review stage should include standard-review technique"
+        );
+        assert!(
+            matches!(
+                review_stage.gate,
+                Some(crate::workflow::config::GateConfig::Agentic)
+            ),
+            "Review stage should have agentic gate"
         );
 
         // Verify descriptions on all unique stages
@@ -409,6 +453,78 @@ mod tests {
         assert_eq!(
             content, "custom content",
             "should not overwrite existing technique file"
+        );
+    }
+
+    #[test]
+    fn test_checks_dir_and_standard_checks_created() {
+        let temp_dir = TempDir::new().unwrap();
+        let orkestra_dir = temp_dir.path().join(".orkestra");
+
+        ensure_orkestra_project(&orkestra_dir).unwrap();
+
+        let checks_dir = orkestra_dir.join("checks");
+        assert!(checks_dir.exists(), "checks/ directory should be created");
+
+        let standard_checks = checks_dir.join("standard-checks.sh");
+        assert!(
+            standard_checks.exists(),
+            "standard-checks.sh should be created"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&standard_checks).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o111,
+                0o111,
+                "standard-checks.sh should be executable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_models_yaml_created() {
+        let temp_dir = TempDir::new().unwrap();
+        let orkestra_dir = temp_dir.path().join(".orkestra");
+
+        ensure_orkestra_project(&orkestra_dir).unwrap();
+
+        let models_path = orkestra_dir.join("models.yaml");
+        assert!(models_path.exists(), "models.yaml should be created");
+
+        let content = fs::read_to_string(&models_path).unwrap();
+        assert!(
+            content.contains("default: sonnet"),
+            "models.yaml should contain default model"
+        );
+        assert!(
+            content.contains("ranked:"),
+            "models.yaml should contain ranked list"
+        );
+    }
+
+    #[test]
+    fn test_models_yaml_not_overwritten_on_reinit() {
+        let temp_dir = TempDir::new().unwrap();
+        let orkestra_dir = temp_dir.path().join(".orkestra");
+
+        ensure_orkestra_project(&orkestra_dir).unwrap();
+
+        let models_path = orkestra_dir.join("models.yaml");
+        fs::write(
+            &models_path,
+            "default: custom-model\nranked:\n  - custom-model\n",
+        )
+        .unwrap();
+
+        ensure_orkestra_project(&orkestra_dir).unwrap();
+
+        let content = fs::read_to_string(&models_path).unwrap();
+        assert!(
+            content.contains("custom-model"),
+            "models.yaml should not be overwritten on reinit"
         );
     }
 

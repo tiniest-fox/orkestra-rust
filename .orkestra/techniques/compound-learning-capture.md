@@ -4,6 +4,7 @@ description: >
   Passive-first scan of what a Trak revealed (confusion, rejection patterns, repeated check
   failures, prompt/skill gaps) and place any genuine learning at its most local, discoverable
   source. Most Traks need zero action from this Technique.
+model: sonnet
 ---
 
 Your goal: make every future Trak faster by capturing what this Trak taught us. Not just what went wrong — what took time, what was confusing, and what could have been prevented. Most Traks are clean — don't manufacture insights.

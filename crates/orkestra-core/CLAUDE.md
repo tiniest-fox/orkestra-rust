@@ -429,11 +429,15 @@ assert!(task.worktree_path.is_some());
 
 This pattern applies to any assertion about intermediate store state when the recovery pass itself transforms that state.
 
-### Known Test Gaps in `init.rs`
+### Known Gaps in `init.rs`
 
-Two gaps exist in `test_checks_script_is_executable` (the `ensure_orkestra_project` test):
+Two test coverage gaps exist in `test_checks_script_is_executable` (the `ensure_orkestra_project` test):
 
 1. **No assertion that agent prompt files land on disk.** The test calls `ensure_orkestra_project` and checks scripts and README exist, but never asserts files under `agents/` are created. Adding `assert!(orkestra_dir.join("agents/compound.md").exists())` (and similar for all five prompt files) would close this.
 
 2. **No workflow-to-prompt coherence check.** No test validates that every `prompt:` reference in the default `workflow.yaml` has a corresponding entry in `DEFAULT_PROMPTS`. A coherence test would catch init-time breakage when prompt files are added or renamed.
+
+One implementation gap to address in Phase 3:
+
+3. **Default technique templates reference `check: checks` but no default check script at that name is seeded.** `implementation-conventions.md` and `standard-verification.md` both declare `check: checks` in their frontmatter, but `ensure_orkestra_project` does not create a `checks` script in `.orkestra/checks/`. Phase 3 must either seed a default `checks` script or update these templates to reference an existing default (e.g., `standard-checks`).
 

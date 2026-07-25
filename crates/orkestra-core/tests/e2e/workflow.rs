@@ -10741,3 +10741,657 @@ fn opencode_token_usage_persisted_and_queryable() {
         "expected total_cost ~0.13, got {total_cost}"
     );
 }
+
+#[test]
+fn test_technique_based_stage_execution() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workflow = WorkflowConfig::new(vec![
+        StageConfig::new("work", "summary").with_techniques(vec![
+            "test-technique".to_string(),
+            "test-conventions".to_string(),
+        ]),
+        StageConfig::new("review", "verdict").with_prompt("reviewer.md"),
+    ]);
+
+    // Only reviewer needs a file — work stage uses technique bodies instead
+    let ctx = TestEnv::with_git(&workflow, &["reviewer"]);
+    let root = ctx.temp_dir().to_path_buf();
+
+    // Create technique files
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::create_dir_all(&techniques_dir).unwrap();
+    std::fs::write(
+        techniques_dir.join("test-technique.md"),
+        "---\ntitle: Test Technique\ndescription: A test technique\nmodel: sonnet\ncheck: test-check\n---\nYou are a work agent using test-technique.",
+    )
+    .unwrap();
+    std::fs::write(
+        techniques_dir.join("test-conventions.md"),
+        "---\ntitle: Test Conventions\ndescription: Conventions for testing\ndisallowed_tools:\n  - pattern: Edit\n    message: Use Write instead\n---\nFollow these conventions.",
+    )
+    .unwrap();
+
+    // Create check script
+    let checks_dir = root.join(".orkestra/checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let check_path = checks_dir.join("test-check.sh");
+    std::fs::write(
+        &check_path,
+        "#!/bin/bash\n# ---\n# title: Test Check\n# description: Test check script\n# timeout_seconds: 10\n# ---\nexit 0",
+    )
+    .unwrap();
+    std::fs::set_permissions(&check_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Create models.yaml
+    let models_path = root.join(".orkestra/models.yaml");
+    std::fs::write(
+        &models_path,
+        "default: sonnet\nranked:\n  - opus\n  - sonnet\n  - haiku\n",
+    )
+    .unwrap();
+
+    // Create task
+    let task = ctx.create_task("Technique test", "Test technique-based execution", None);
+    let task_id = task.id.clone();
+
+    assert_eq!(task.current_stage(), Some("work"));
+    assert!(matches!(task.state, TaskState::Queued { .. }));
+
+    // Work stage: set output and advance
+    ctx.set_output(
+        &task_id,
+        MockAgentOutput::Artifact {
+            name: "summary".to_string(),
+            content: "Work done via techniques".to_string(),
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    ctx.advance(); // spawns work agent → drain_active → artifact processed → AwaitingGate
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingGate { .. }),
+        "Task should be AwaitingGate after work output with technique checks"
+    );
+
+    // Gate runs (test-check.sh exits 0)
+    ctx.set_output(
+        &task_id,
+        MockAgentOutput::Artifact {
+            name: "verdict".to_string(),
+            content: "Approved".to_string(),
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    ctx.advance(); // spawns gate → drain_active → gate passes → AwaitingApproval
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingApproval { .. }),
+        "Task should be AwaitingApproval after gate passes, got {:?}",
+        task.state
+    );
+
+    // Approve and advance through review
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance(); // commit pipeline → review Queued
+    ctx.advance(); // spawns reviewer → drain_active → review output → AwaitingApproval
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance(); // commit pipeline → Done/Archived
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        task.is_done() || task.is_archived(),
+        "Task should be done/archived after successful technique-based execution, got {:?}",
+        task.state
+    );
+}
+
+// =============================================================================
+// Comprehensive Technique E2E Tests
+// =============================================================================
+
+/// Helper: create technique and check dirs with a simple passing check.
+fn setup_technique_env(root: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::create_dir_all(&techniques_dir).unwrap();
+
+    let checks_dir = root.join(".orkestra/checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+
+    // Models registry
+    std::fs::write(
+        root.join(".orkestra/models.yaml"),
+        "default: sonnet\nranked:\n  - opus\n  - sonnet\n  - haiku\n",
+    )
+    .unwrap();
+
+    // Default passing check script
+    let check_path = checks_dir.join("test-check.sh");
+    std::fs::write(
+        &check_path,
+        "#!/bin/bash\n# ---\n# title: Test Check\n# description: Minimal passing check\n# timeout_seconds: 10\n# ---\nexit 0",
+    )
+    .unwrap();
+    std::fs::set_permissions(&check_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Verify that the higher-ranked model (per models.yaml) wins when two techniques
+/// specify different models.
+#[test]
+fn test_technique_model_resolution() {
+    let workflow = WorkflowConfig::new(vec![StageConfig::new("work", "summary")
+        .with_techniques(vec!["model-a".to_string(), "model-b".to_string()])]);
+
+    let ctx = TestEnv::with_git(&workflow, &[]);
+    let root = ctx.temp_dir().to_path_buf();
+    setup_technique_env(&root);
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    // model-a specifies haiku; model-b specifies opus — opus is ranked higher
+    std::fs::write(
+        techniques_dir.join("model-a.md"),
+        "---\ntitle: Model A\ndescription: Uses haiku\nmodel: haiku\n---\nDo work with haiku.",
+    )
+    .unwrap();
+    std::fs::write(
+        techniques_dir.join("model-b.md"),
+        "---\ntitle: Model B\ndescription: Uses opus\nmodel: opus\n---\nDo work with opus.",
+    )
+    .unwrap();
+
+    let task = ctx.create_task("Model resolution test", "Test model ranking", None);
+    let task_id = task.id.clone();
+
+    ctx.set_output(&task_id, MockAgentOutput::artifact("summary", "Work done"));
+    ctx.advance(); // spawns agent
+
+    // Verify opus (higher-ranked) was selected
+    let config = ctx.last_run_config();
+    assert_eq!(
+        config.model.as_deref(),
+        Some("opus"),
+        "Higher-ranked model should be selected across techniques"
+    );
+}
+
+/// Verify that `disallowed_tools` from multiple techniques are merged (union).
+#[test]
+fn test_technique_disallowed_tools_merge() {
+    let workflow = WorkflowConfig::new(vec![StageConfig::new("work", "summary").with_techniques(
+        vec!["tool-restrict-a".to_string(), "tool-restrict-b".to_string()],
+    )]);
+
+    let ctx = TestEnv::with_git(&workflow, &[]);
+    let root = ctx.temp_dir().to_path_buf();
+    setup_technique_env(&root);
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::write(
+        techniques_dir.join("tool-restrict-a.md"),
+        "---\ntitle: Tool Restrict A\ndescription: Restricts Edit\ndisallowed_tools:\n  - pattern: Edit\n    message: No editing allowed\n---\nDo not edit files.",
+    )
+    .unwrap();
+    std::fs::write(
+        techniques_dir.join("tool-restrict-b.md"),
+        "---\ntitle: Tool Restrict B\ndescription: Restricts Write\ndisallowed_tools:\n  - pattern: Write\n    message: No writing allowed\n---\nDo not write files.",
+    )
+    .unwrap();
+
+    let task = ctx.create_task("Tool restriction test", "Test tool merge", None);
+    let task_id = task.id.clone();
+
+    ctx.set_output(&task_id, MockAgentOutput::artifact("summary", "Work done"));
+    ctx.advance();
+
+    let config = ctx.last_run_config();
+    let patterns: Vec<&str> = config
+        .disallowed_tools
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
+    assert!(
+        patterns.contains(&"Edit"),
+        "Edit restriction from technique A should be present"
+    );
+    assert!(
+        patterns.contains(&"Write"),
+        "Write restriction from technique B should be present"
+    );
+}
+
+/// Verify that a technique with `check:` triggers an automated gate and the task
+/// advances on gate success.
+#[test]
+fn test_technique_gate_from_checks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workflow = WorkflowConfig::new(vec![
+        StageConfig::new("work", "summary").with_techniques(vec!["check-technique".to_string()]),
+        StageConfig::new("review", "verdict").with_prompt("reviewer.md"),
+    ]);
+
+    let ctx = TestEnv::with_git(&workflow, &["reviewer"]);
+    let root = ctx.temp_dir().to_path_buf();
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::create_dir_all(&techniques_dir).unwrap();
+    std::fs::write(
+        techniques_dir.join("check-technique.md"),
+        "---\ntitle: Check Technique\ndescription: Has a gate check\ncheck: passing-check\n---\nDo work.",
+    )
+    .unwrap();
+
+    let checks_dir = root.join(".orkestra/checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let check_path = checks_dir.join("passing-check.sh");
+    std::fs::write(
+        &check_path,
+        "#!/bin/bash\n# ---\n# title: Passing Check\n# description: Always passes\n# timeout_seconds: 10\n# ---\nexit 0",
+    )
+    .unwrap();
+    std::fs::set_permissions(&check_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let task = ctx.create_task("Gate test", "Verify technique gate triggers", None);
+    let task_id = task.id.clone();
+
+    // Work stage produces artifact
+    ctx.set_output(&task_id, MockAgentOutput::artifact("summary", "Work done"));
+    ctx.advance(); // spawn worker → artifact → AwaitingGate
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingGate { .. }),
+        "Task should be AwaitingGate after work output with technique check, got {:?}",
+        task.state
+    );
+
+    // Gate passes → AwaitingApproval
+    ctx.set_output(&task_id, MockAgentOutput::artifact("verdict", "Approved"));
+    ctx.advance(); // gate runs → passes → AwaitingApproval
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingApproval { .. }),
+        "Task should be AwaitingApproval after gate passes, got {:?}",
+        task.state
+    );
+
+    // Approve and advance through review
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance();
+    ctx.advance();
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance();
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        task.is_done() || task.is_archived(),
+        "Task should complete after gate passes, got {:?}",
+        task.state
+    );
+}
+
+/// Verify the full gate failure/recovery cycle: work → gate fails → re-queue →
+/// work → gate passes → advance. Mirrors `test_gate_script_with_recovery`.
+#[test]
+fn test_technique_gate_failure_and_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Toggle gate: fails first time (creates marker), passes second time
+    let gate_body = concat!(
+        "MARKER=/tmp/orkestra_technique_gate_test_${ORKESTRA_TASK_ID}; ",
+        "if [ -z \"$ORKESTRA_TASK_ID\" ]; then exit 1; fi; ",
+        "if [ -f \"$MARKER\" ]; then exit 0; ",
+        "else touch \"$MARKER\"; exit 1; fi",
+    );
+    let check_content = format!(
+        "#!/bin/bash\n# ---\n# title: Toggle Check\n# description: Fails first, passes second\n# timeout_seconds: 10\n# ---\n{gate_body}"
+    );
+
+    let workflow = WorkflowConfig::new(vec![
+        StageConfig::new("work", "summary").with_techniques(vec!["toggle-technique".to_string()]),
+        StageConfig::new("review", "verdict").with_prompt("reviewer.md"),
+    ]);
+
+    let ctx = TestEnv::with_git(&workflow, &["reviewer"]);
+    let root = ctx.temp_dir().to_path_buf();
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::create_dir_all(&techniques_dir).unwrap();
+    std::fs::write(
+        techniques_dir.join("toggle-technique.md"),
+        "---\ntitle: Toggle Technique\ndescription: Gate that fails then passes\ncheck: toggle-check\n---\nDo work.",
+    )
+    .unwrap();
+
+    let checks_dir = root.join(".orkestra/checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let check_path = checks_dir.join("toggle-check.sh");
+    std::fs::write(&check_path, &check_content).unwrap();
+    std::fs::set_permissions(&check_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let task = ctx.create_task(
+        "Gate recovery test",
+        "Technique gate failure/recovery",
+        None,
+    );
+    let task_id = task.id.clone();
+
+    // Work produces first artifact
+    ctx.set_output(
+        &task_id,
+        MockAgentOutput::artifact("summary", "Initial work"),
+    );
+    ctx.advance(); // spawn → artifact → AwaitingGate
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingGate { .. }),
+        "Should be AwaitingGate, got {:?}",
+        task.state
+    );
+
+    // Pre-queue second work output for after gate failure
+    ctx.set_output(
+        &task_id,
+        MockAgentOutput::artifact("summary", "Fixed work after gate failure"),
+    );
+
+    ctx.advance(); // gate fails → work re-queued
+
+    let iterations = ctx.api().get_iterations(&task_id).unwrap();
+    assert!(
+        iterations.iter().any(|i| matches!(
+            i.outcome.as_ref(),
+            Some(orkestra_core::workflow::runtime::Outcome::GateFailed { .. })
+        )),
+        "Should have GateFailed iteration"
+    );
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::Queued { .. }),
+        "Work should be re-queued after gate failure, got {:?}",
+        task.state
+    );
+
+    ctx.advance(); // spawn second worker → artifact → AwaitingGate
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingGate { .. }),
+        "Should be AwaitingGate after second work output, got {:?}",
+        task.state
+    );
+
+    // Gate passes this time → AwaitingApproval
+    ctx.set_output(&task_id, MockAgentOutput::artifact("verdict", "Approved"));
+    ctx.advance(); // gate passes → AwaitingApproval
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingApproval { .. }),
+        "Should be AwaitingApproval after gate passes, got {:?}",
+        task.state
+    );
+
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance();
+    ctx.advance();
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance();
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        task.is_done() || task.is_archived(),
+        "Task should complete after full recovery cycle, got {:?}",
+        task.state
+    );
+}
+
+/// Verify the system prompt contains text from both technique bodies when two
+/// techniques are combined on a stage.
+#[test]
+fn test_technique_prompt_assembly() {
+    let workflow = WorkflowConfig::new(vec![StageConfig::new("work", "summary")
+        .with_techniques(vec!["prompt-a".to_string(), "prompt-b".to_string()])]);
+
+    let ctx = TestEnv::with_git(&workflow, &[]);
+    let root = ctx.temp_dir().to_path_buf();
+    setup_technique_env(&root);
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::write(
+        techniques_dir.join("prompt-a.md"),
+        "---\ntitle: Prompt A\ndescription: First technique\n---\nALPHA_UNIQUE_CONTENT from technique A.",
+    )
+    .unwrap();
+    std::fs::write(
+        techniques_dir.join("prompt-b.md"),
+        "---\ntitle: Prompt B\ndescription: Second technique\n---\nBETA_UNIQUE_CONTENT from technique B.",
+    )
+    .unwrap();
+
+    let task = ctx.create_task(
+        "Prompt assembly test",
+        "Test technique bodies are combined",
+        None,
+    );
+    let task_id = task.id.clone();
+
+    ctx.set_output(&task_id, MockAgentOutput::artifact("summary", "Work done"));
+    ctx.advance();
+
+    let system_prompt = ctx.last_system_prompt().expect("Should have system prompt");
+
+    assert!(
+        system_prompt.contains("ALPHA_UNIQUE_CONTENT"),
+        "System prompt should contain body from technique A"
+    );
+    assert!(
+        system_prompt.contains("BETA_UNIQUE_CONTENT"),
+        "System prompt should contain body from technique B"
+    );
+}
+
+/// Verify that a stage with `techniques: []` and an explicit `prompt`/`model`
+/// falls back to old behavior unchanged.
+#[test]
+fn test_technique_with_empty_list_falls_back() {
+    let workflow = WorkflowConfig::new(vec![
+        StageConfig::new("work", "summary").with_prompt("worker.md")
+    ]);
+
+    let ctx = TestEnv::with_git(&workflow, &["worker"]);
+
+    let task = ctx.create_task("Fallback test", "Empty techniques → explicit prompt", None);
+    let task_id = task.id.clone();
+
+    ctx.set_output(&task_id, MockAgentOutput::artifact("summary", "Work done"));
+    ctx.advance(); // spawn worker
+
+    // No gate on the stage → task goes directly to AwaitingApproval (not Queued)
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingApproval { .. }),
+        "Stage with empty techniques and explicit prompt should pause at AwaitingApproval, got {:?}",
+        task.state
+    );
+}
+
+/// Verify that a stage with both technique checks and an agentic gate produces a clear
+/// error rather than leaving the task stuck in `AwaitingGate` with no recovery path.
+///
+/// This exercises the conflict-validation path in `spawn_one_gate`.
+#[test]
+fn test_technique_checks_and_agentic_gate_conflict_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Stage has BOTH a technique check AND gate: Agentic — mutually exclusive.
+    let workflow = WorkflowConfig::new(vec![StageConfig::new("work", "summary")
+        .with_techniques(vec!["conflict-technique".to_string()])
+        .with_gate(GateConfig::Agentic)]);
+
+    let ctx = TestEnv::with_git(&workflow, &[]);
+    let root = ctx.temp_dir().to_path_buf();
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::create_dir_all(&techniques_dir).unwrap();
+    std::fs::write(
+        techniques_dir.join("conflict-technique.md"),
+        "---\ntitle: Conflict Technique\ndescription: Has both check and agentic gate\ncheck: simple-check\n---\nDo work.",
+    )
+    .unwrap();
+
+    let checks_dir = root.join(".orkestra/checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let check_path = checks_dir.join("simple-check.sh");
+    std::fs::write(
+        &check_path,
+        "#!/bin/bash\n# ---\n# title: Simple Check\n# description: Always passes\n# timeout_seconds: 10\n# ---\nexit 0",
+    )
+    .unwrap();
+    std::fs::set_permissions(&check_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let task = ctx.create_task(
+        "Conflict test",
+        "Technique checks + agentic gate conflict",
+        None,
+    );
+    let task_id = task.id.clone();
+
+    // Agent produces an artifact — gate resolution (has_automated_gate=true due to technique
+    // check) transitions to AwaitingGate.
+    ctx.set_output(&task_id, MockAgentOutput::artifact("summary", "Work done"));
+    ctx.advance(); // spawn work agent → artifact → AwaitingGate
+
+    let task_after_work = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task_after_work.state, TaskState::AwaitingGate { .. }),
+        "Task should enter AwaitingGate before conflict is detected, got {:?}",
+        task_after_work.state
+    );
+
+    // Next tick: orchestrator calls spawn_one_gate → detects conflict → emits error event
+    // and returns Ok(()). The task stays in AwaitingGate (not silently advanced or failed).
+    ctx.advance();
+
+    let task_after_conflict = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task_after_conflict.state, TaskState::AwaitingGate { .. }),
+        "After conflict, task should remain AwaitingGate (gate not launched), got {:?}",
+        task_after_conflict.state
+    );
+}
+
+/// Verify a full multi-stage technique-based pipeline (work → review) completes.
+#[test]
+fn test_technique_multi_stage_flow() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workflow = WorkflowConfig::new(vec![
+        StageConfig::new("work", "summary")
+            .with_techniques(vec!["multi-work-technique".to_string()]),
+        StageConfig::new("review", "verdict")
+            .with_techniques(vec!["multi-review-technique".to_string()])
+            .with_gate(GateConfig::Agentic),
+    ]);
+
+    let ctx = TestEnv::with_git(&workflow, &[]);
+    let root = ctx.temp_dir().to_path_buf();
+
+    let techniques_dir = root.join(".orkestra/techniques");
+    std::fs::create_dir_all(&techniques_dir).unwrap();
+    std::fs::write(
+        techniques_dir.join("multi-work-technique.md"),
+        "---\ntitle: Multi Work\ndescription: Work technique for multi-stage test\ncheck: quick-check\n---\nDo the work.",
+    )
+    .unwrap();
+    std::fs::write(
+        techniques_dir.join("multi-review-technique.md"),
+        "---\ntitle: Multi Review\ndescription: Review technique for multi-stage test\nmodel: opus\n---\nReview the work.",
+    )
+    .unwrap();
+
+    let checks_dir = root.join(".orkestra/checks");
+    std::fs::create_dir_all(&checks_dir).unwrap();
+    let check_path = checks_dir.join("quick-check.sh");
+    std::fs::write(
+        &check_path,
+        "#!/bin/bash\n# ---\n# title: Quick Check\n# description: Minimal check\n# timeout_seconds: 10\n# ---\nexit 0",
+    )
+    .unwrap();
+    std::fs::set_permissions(&check_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    std::fs::write(
+        root.join(".orkestra/models.yaml"),
+        "default: sonnet\nranked:\n  - opus\n  - sonnet\n",
+    )
+    .unwrap();
+
+    let task = ctx.create_task("Multi-stage test", "Full technique pipeline", None);
+    let task_id = task.id.clone();
+
+    // Work stage
+    ctx.set_output(
+        &task_id,
+        MockAgentOutput::artifact("summary", "Implementation complete"),
+    );
+    ctx.advance(); // spawn work agent → artifact → AwaitingGate
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingGate { .. }),
+        "Should be AwaitingGate after work with technique check, got {:?}",
+        task.state
+    );
+
+    // Gate passes → AwaitingApproval
+    ctx.set_output(&task_id, MockAgentOutput::artifact("verdict", "Approved"));
+    ctx.advance(); // gate passes → AwaitingApproval
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, TaskState::AwaitingApproval { .. }),
+        "Should be AwaitingApproval after gate, got {:?}",
+        task.state
+    );
+
+    // Human approves work → commit pipeline → review stage
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance(); // commit pipeline → review Queued
+    ctx.advance(); // spawn review agent → artifact → AwaitingApproval (agentic gate)
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert_eq!(
+        task.current_stage(),
+        Some("review"),
+        "Should be in review stage, got {:?}",
+        task.state
+    );
+
+    // Verify review used opus model (from multi-review-technique)
+    let config = ctx.last_run_config();
+    assert_eq!(
+        config.model.as_deref(),
+        Some("opus"),
+        "Review stage should use opus from technique"
+    );
+
+    // Approve review → Done
+    ctx.api().approve(&task_id).unwrap();
+    ctx.advance();
+
+    let task = ctx.api().get_task(&task_id).unwrap();
+    assert!(
+        task.is_done() || task.is_archived(),
+        "Task should complete after multi-stage technique flow, got {:?}",
+        task.state
+    );
+}

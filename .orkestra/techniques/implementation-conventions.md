@@ -4,6 +4,22 @@ description: >
   Follow existing codebase patterns, module structure (interactions/types/interface/service/mock),
   naming, and error-handling conventions. Grep for mirrored string constants and stale docstrings
   before finishing. Present in nearly every code-touching step.
+check: standard-checks
+disallowed_tools:
+  - pattern: 'Bash(*cargo test*)'
+    message: Testing runs automatically in the gate after you complete your work
+  - pattern: 'Bash(*cargo build*)'
+    message: Building is handled by the gate that runs after you complete your work
+  - pattern: 'Bash(*cargo clippy*)'
+    message: Linting runs automatically in the gate after you complete your work
+  - pattern: 'Bash(*cargo fmt*)'
+    message: Formatting runs automatically in the gate after you complete your work
+  - pattern: 'Bash(pnpm tauri*)'
+    message: Never run the app — it spawns nested agent processes and causes errors
+  - pattern: 'Bash(pnpm dev*)'
+    message: Never run the app dev server — it's not needed for implementation
+  - pattern: 'Bash(*cargo run*)'
+    message: Never run the app binary — it spawns nested agent processes and causes errors
 ---
 
 Follow the established patterns in this codebase rather than inventing new ones. Consistency matters more than theoretical perfection.

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use crate::orkestra_debug;
-use crate::workflow::config::{ToolRestriction, WorkflowConfig};
+use crate::workflow::config::{load_and_resolve_techniques, ToolRestriction, WorkflowConfig};
 use crate::workflow::domain::{IterationTrigger, Task};
 use crate::workflow::execution::{
     build_resume_prompt, AgentRunnerTrait, IntegrationErrorContext, ProviderCapabilities,
@@ -83,13 +83,33 @@ pub(crate) fn execute(
         workflow.stage(&task.flow, stage)
     };
 
+    // Resolve techniques if stage uses them
+    let resolved_techniques = if let Some(sc) = stage_config {
+        if sc.techniques.is_empty() {
+            None
+        } else {
+            Some(
+                load_and_resolve_techniques(prompt_service.project_root(), &sc.techniques)
+                    .map_err(|e| {
+                        ExecutionError::ConfigError(format!("Technique resolution failed: {e}"))
+                    })?,
+            )
+        }
+    } else {
+        None
+    };
+
     // 1. Get JSON schema (needed for BOTH first spawn and resume)
     let json_schema = get_stage_schema(workflow, prompt_service, task, stage, stage_config)?;
     let compact_json_schema = orkestra_schema::compact_schema(&json_schema)
         .map_err(|e| ExecutionError::ConfigError(format!("Invalid JSON schema: {e}")))?;
 
     // 2. Resolve the provider to check capabilities
-    let model_spec = stage_config.and_then(|s| s.model.clone());
+    let model_spec = if let Some(ref resolved) = resolved_techniques {
+        resolved.model.clone()
+    } else {
+        stage_config.and_then(|s| s.model.clone())
+    };
     let resolved = registry.resolve(model_spec.as_deref())?;
 
     // 3. Extract feedback from trigger (used by both system prompt and user message)
@@ -97,6 +117,7 @@ pub(crate) fn execute(
 
     // 4. Build system prompt (needed for BOTH fresh and resume)
     // System prompt may contain Handlebars conditionals that need feedback context
+    let technique_agent_def = resolved_techniques.as_ref().map(|r| r.prompt_body.as_str());
     let system_prompt = build_system_prompt(
         prompt_service,
         workflow,
@@ -106,11 +127,15 @@ pub(crate) fn execute(
         resolved.capabilities.requires_direct_structured_output,
         sibling_tasks,
         parent_resources,
+        technique_agent_def,
     )?;
 
     // 5. Apply tool restrictions (split into prompt text + CLI patterns)
-    let effective_tools =
-        stage_config.map_or(&[] as &[ToolRestriction], |s| s.disallowed_tools.as_slice());
+    let effective_tools: &[ToolRestriction] = if let Some(ref resolved) = resolved_techniques {
+        &resolved.disallowed_tools
+    } else {
+        stage_config.map_or(&[] as &[ToolRestriction], |s| s.disallowed_tools.as_slice())
+    };
     let (system_prompt, disallowed_patterns) =
         apply_tool_restrictions(system_prompt, effective_tools)?;
 
@@ -126,6 +151,7 @@ pub(crate) fn execute(
         resolved.capabilities.requires_direct_structured_output,
         sibling_tasks,
         parent_resources,
+        technique_agent_def,
     )?;
 
     // 6b. For vibe stage, append valid exit destinations so the agent knows where it can route.
@@ -290,6 +316,7 @@ fn build_system_prompt(
     show_direct_structured_output_hint: bool,
     sibling_tasks: &[SiblingTaskContext],
     parent_resources: Option<&ResourceStore>,
+    pre_resolved_agent_def: Option<&str>,
 ) -> Result<String, ExecutionError> {
     let config = prompt_service.resolve_config(
         workflow,
@@ -300,6 +327,7 @@ fn build_system_prompt(
         show_direct_structured_output_hint,
         sibling_tasks,
         parent_resources,
+        pre_resolved_agent_def,
     )?;
     Ok(config.system_prompt)
 }
@@ -320,6 +348,7 @@ fn build_user_prompt(
     show_direct_structured_output_hint: bool,
     sibling_tasks: &[SiblingTaskContext],
     parent_resources: Option<&ResourceStore>,
+    pre_resolved_agent_def: Option<&str>,
 ) -> Result<(String, Vec<PromptSection>), ExecutionError> {
     if is_resume {
         let resume_type = trigger_to_resume_type(trigger);
@@ -348,6 +377,7 @@ fn build_user_prompt(
             show_direct_structured_output_hint,
             sibling_tasks,
             parent_resources,
+            pre_resolved_agent_def,
         )?;
         Ok((config.prompt, config.dynamic_sections))
     }

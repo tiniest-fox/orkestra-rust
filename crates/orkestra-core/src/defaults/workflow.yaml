@@ -3,7 +3,7 @@
 # Defines the flows (pipelines) a task passes through from creation to completion.
 # Each flow contains its own ordered stages with integration configuration.
 #
-# Stages run an AI agent (with a prompt template) or a shell script.
+# Stages run an AI agent (with a prompt template or technique list) or a shell script.
 # Artifacts from earlier stages are automatically available to later stages.
 #
 # Stages can have a gate: a shell script that runs after the agent completes.
@@ -35,15 +35,14 @@ flows:
             flow: subtask
 
       # Work: implement the code changes described by the plan.
-      # The gate runs checks.sh after the agent completes. On failure, the agent retries.
+      # Gate is derived from technique check scripts. On failure, the agent retries.
       - &work_stage
         name: work
         description: Implements the code changes described by the plan and produces a work summary
         artifact: summary
-        prompt: worker.md
-        gate:
-          command: "$ORKESTRA_PROJECT_ROOT/.orkestra/scripts/checks.sh"
-          timeout_seconds: 600
+        techniques:
+          - implementation-conventions
+          - standard-verification
 
       # Review: check completed work, approve or reject with feedback.
       # On rejection, sends the task back to the work stage.
@@ -51,7 +50,8 @@ flows:
         name: review
         description: Reviews completed work and produces an approval or rejection verdict with feedback
         artifact: verdict
-        prompt: reviewer.md
+        techniques:
+          - standard-review
         gate: true
 
       # Compound: capture documentation improvements from completed work.
@@ -60,7 +60,8 @@ flows:
         name: compound
         description: Captures learnings from the completed Trak to improve future work
         artifact: learnings
-        prompt: compound.md
+        techniques:
+          - compound-learning-capture
 
     # Where to send the task when merging its branch fails (e.g., conflict).
     integration:

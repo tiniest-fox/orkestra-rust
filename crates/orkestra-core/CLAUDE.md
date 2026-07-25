@@ -259,6 +259,16 @@ Tests that verify lock contention (e.g., "second orchestrator is blocked") must 
 - **Don't mix concerns in interactions** — One `execute()` per file, single responsibility
 - **Don't hardcode stage names** — Stage names are user-defined in `workflow.yaml`. Never write `"planning"` or any other stage name as a hardcoded fallback. Use `workflow.first_stage_in_flow(&flow).ok_or_else(...)` or return `WorkflowError::InvalidTransition` instead. Hardcoded names silently route tasks to the wrong pipeline when a project uses custom stage names.
 
+- **Gate errors in `spawn_one_gate` use event emission, not `return Err`** — All error paths inside `spawn_one_gate` call `Self::push_gate_error(task_id, ..., events)` and then `return Ok(())`. Using `return Err(...)` instead causes the orchestrator to panic rather than logging the error and continuing — tests written against `return Err` will pass but assert `Failed` state when the actual outcome is `AwaitingGate` with an error event. `push_gate_error` is an associated fn (no `&self`); call it as `Self::push_gate_error(...)`.
+
+- **`resolve_has_automated_gate` must only run inside `StageOutput::Artifact`** — In `dispatch_output` (`process_output.rs`), the call to `resolve_has_automated_gate` lives inside the `StageOutput::Artifact { .. }` arm. It must not be moved outside into the shared prelude. `resolve_has_automated_gate` calls `load_and_resolve_techniques`, which does filesystem I/O; calling it unconditionally causes spurious technique-resolution errors for `Questions`, `Failed`, and `Blocked` outputs that don't use the result at all.
+
+### Technique Resolution Lifecycle
+
+`load_and_resolve_techniques` is called at three independent points: agent spawn (`execute_agent.rs`), output processing (`process_output.rs`), and gate spawn (`orchestrator/mod.rs`). Each reads and parses technique files from disk. This is intentional — resolution at execution time avoids mutating shared `WorkflowConfig` — but it means a TOCTOU window exists if a technique file changes mid-execution. The `pre_resolved_agent_def: Option<&str>` parameter threaded through `resolve_stage_agent_config_for` is incremental progress toward resolve-once. The full improvement is to thread `ResolvedTechniques` (or at minimum `has_automated_gate: bool`) from the spawn point through output processing so the gate check doesn't require a second disk read.
+
+**Known gap**: A stage with both technique checks (`check:`) and `gate: true` (agentic) will reach `AwaitingGate`, then `spawn_one_gate` emits an error event and returns — leaving the task stuck in `AwaitingGate` with no automated recovery path. This is explicitly tested (`test_technique_checks_and_agentic_gate_conflict_errors`). Two future improvement paths: (1) validate at config load in `validate_technique_fields` to fail fast before any execution, or (2) have `spawn_one_gate` transition the task to `AwaitingApproval` with error context so a human can act.
+
 ## Rust Anti-Patterns to Avoid
 
 ### `is_some_and()` + `unwrap()` is a double-traversal
@@ -437,7 +447,4 @@ Two test coverage gaps exist in `test_checks_script_is_executable` (the `ensure_
 
 2. **No workflow-to-prompt coherence check.** No test validates that every `prompt:` reference in the default `workflow.yaml` has a corresponding entry in `DEFAULT_PROMPTS`. A coherence test would catch init-time breakage when prompt files are added or renamed.
 
-One implementation gap to address in Phase 3:
-
-3. **Default technique templates reference `check: checks` but no default check script at that name is seeded.** `implementation-conventions.md` and `standard-verification.md` both declare `check: checks` in their frontmatter, but `ensure_orkestra_project` does not create a `checks` script in `.orkestra/checks/`. Phase 3 must either seed a default `checks` script or update these templates to reference an existing default (e.g., `standard-checks`).
 

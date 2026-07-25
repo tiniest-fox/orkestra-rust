@@ -5,7 +5,7 @@
 
 mod auto_task;
 mod loader;
-pub mod technique;
+pub(crate) mod technique;
 
 /// Split a markdown file into YAML frontmatter and body.
 ///
@@ -32,7 +32,6 @@ pub use orkestra_types::config::{
 pub use auto_task::{load_auto_task_templates, AutoTaskTemplate};
 pub use loader::{load_workflow, load_workflow_for_project, LoadError};
 pub use technique::{
-    parse_check_metadata, parse_model_registry, parse_technique, resolve_checks,
-    resolve_disallowed_tools, resolve_model, CheckMetadata, ModelRegistry, Technique,
-    TechniqueLoadError,
+    build_gate_from_checks, load_and_resolve_techniques, CheckMetadata, ModelRegistry,
+    ResolvedTechniques, Technique, TechniqueLoadError,
 };

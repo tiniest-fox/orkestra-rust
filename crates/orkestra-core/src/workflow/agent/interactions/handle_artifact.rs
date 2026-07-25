@@ -1,12 +1,16 @@
 //! Handle artifact output: store artifact, check gate, auto-approve or await review.
 
-use crate::workflow::config::{GateConfig, WorkflowConfig};
+use crate::workflow::config::WorkflowConfig;
 use crate::workflow::domain::Task;
 use crate::workflow::iteration::IterationService;
 use crate::workflow::ports::WorkflowResult;
 use crate::workflow::runtime::{Artifact, TaskState};
 use crate::workflow::stage::interactions as stage;
 
+/// Store an artifact and transition state based on the pre-resolved gate decision.
+///
+/// `has_automated_gate` must be resolved by the caller (see `dispatch_output`) to
+/// avoid duplicating gate logic and to keep this function free of filesystem I/O.
 pub fn execute(
     workflow: &WorkflowConfig,
     iteration_service: &IterationService,
@@ -14,6 +18,7 @@ pub fn execute(
     content: &str,
     stage_name: &str,
     now: &str,
+    has_automated_gate: bool,
 ) -> WorkflowResult<Option<String>> {
     let artifact_name = stage::finalize_advancement::artifact_name_for_stage(
         workflow, &task.flow, stage_name, "artifact",
@@ -21,14 +26,7 @@ pub fn execute(
     task.artifacts
         .set(Artifact::new(&artifact_name, content, stage_name, now));
 
-    // If the stage has an automated (script) gate, transition to AwaitingGate so the
-    // orchestrator can spawn and track the script. Agentic gates fall through to
-    // auto_advance_or_review, which sets AwaitingApproval for human confirmation.
-    if workflow
-        .stage(&task.flow, stage_name)
-        .and_then(|s| s.gate.as_ref())
-        .is_some_and(|g| matches!(g, GateConfig::Automated { .. }))
-    {
+    if has_automated_gate {
         task.state = TaskState::awaiting_gate(stage_name);
         task.updated_at = now.to_string();
         return Ok(Some(artifact_name));

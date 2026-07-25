@@ -1,7 +1,9 @@
 //! Process completed agent output. Routes `StageOutput` variants to handlers.
 
+use std::path::Path;
+
 use crate::orkestra_debug;
-use crate::workflow::config::WorkflowConfig;
+use crate::workflow::config::{load_and_resolve_techniques, GateConfig, WorkflowConfig};
 use crate::workflow::domain::{LogEntry, Task, WorkflowArtifact};
 use crate::workflow::execution::StageOutput;
 use crate::workflow::iteration::IterationService;
@@ -16,6 +18,7 @@ pub fn execute(
     iteration_service: &IterationService,
     task_id: &str,
     output: StageOutput,
+    project_root: Option<&Path>,
 ) -> WorkflowResult<Task> {
     let mut task = store
         .get_task(task_id)?
@@ -70,6 +73,7 @@ pub fn execute(
         &current_stage,
         &now,
         &iteration_id,
+        project_root,
     )?;
 
     orkestra_debug!(
@@ -102,6 +106,7 @@ pub(crate) fn dispatch_output(
     current_stage: &str,
     now: &str,
     iteration_id: &str,
+    project_root: Option<&Path>,
 ) -> WorkflowResult<()> {
     // Extract resources before the match consumes the output.
     let output_resources = output.resources().to_vec();
@@ -124,14 +129,21 @@ pub(crate) fn dispatch_output(
                 "artifact",
             ))
         }
-        StageOutput::Artifact { content, .. } => super::handle_artifact::execute(
-            workflow,
-            iteration_service,
-            task,
-            &content,
-            current_stage,
-            now,
-        )?,
+        StageOutput::Artifact { content, .. } => {
+            // Resolve gate only here — the only consumer. Avoids failing Questions/Failed/Blocked
+            // outputs with a confusing technique-resolution error when the gate config is malformed.
+            let has_automated_gate =
+                resolve_has_automated_gate(workflow, &task.flow, current_stage, project_root)?;
+            super::handle_artifact::execute(
+                workflow,
+                iteration_service,
+                task,
+                &content,
+                current_stage,
+                now,
+                has_automated_gate,
+            )?
+        }
         StageOutput::Approval {
             decision,
             content,
@@ -273,6 +285,43 @@ fn persist_and_emit_artifact(
     )
 }
 
+/// Determine whether an automated gate applies for the given stage.
+///
+/// Returns `true` for explicitly-configured automated gates or for technique-derived
+/// gates (when a technique's `check:` resolves to a check script). Does NOT validate
+/// the technique-checks + agentic-gate conflict — that check lives exclusively in
+/// `spawn_one_gate` in the orchestrator.
+fn resolve_has_automated_gate(
+    workflow: &WorkflowConfig,
+    flow: &str,
+    stage_name: &str,
+    project_root: Option<&Path>,
+) -> WorkflowResult<bool> {
+    let stage_cfg = workflow.stage(flow, stage_name);
+
+    if stage_cfg
+        .and_then(|s| s.gate.as_ref())
+        .is_some_and(|g| matches!(g, GateConfig::Automated { .. }))
+    {
+        return Ok(true);
+    }
+
+    if let Some(sc) = stage_cfg {
+        if !sc.techniques.is_empty() {
+            let root = project_root.ok_or_else(|| {
+                WorkflowError::InvalidState(
+                    "project_root required for technique gate resolution".into(),
+                )
+            })?;
+            let resolved = load_and_resolve_techniques(root, &sc.techniques)
+                .map_err(|e| WorkflowError::InvalidState(format!("Technique resolution: {e}")))?;
+            return Ok(!resolved.checks.is_empty());
+        }
+    }
+
+    Ok(false)
+}
+
 /// Convert parsed resource output into `Resource` entries and merge into the store.
 fn merge_resources(
     store: &mut ResourceStore,
@@ -359,6 +408,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 
@@ -415,6 +465,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 
@@ -465,6 +516,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 
@@ -517,6 +569,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 
@@ -548,6 +601,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 

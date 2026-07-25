@@ -72,6 +72,7 @@ impl PromptService {
         show_direct_structured_output_hint: bool,
         sibling_tasks: &[SiblingTaskContext],
         parent_resources: Option<&ResourceStore>,
+        pre_resolved_agent_def: Option<&str>,
     ) -> Result<ResolvedAgentConfig, AgentConfigError> {
         let stage_name = task
             .current_stage()
@@ -88,6 +89,7 @@ impl PromptService {
             show_direct_structured_output_hint,
             sibling_tasks,
             parent_resources,
+            pre_resolved_agent_def,
         )
     }
 }
@@ -119,7 +121,8 @@ mod tests {
         let mut task = Task::new("task-1", "Test", "Desc", "planning", "now");
         task.state = crate::workflow::runtime::TaskState::Done;
 
-        let result = service.resolve_config(&workflow, &task, &[], None, None, false, &[], None);
+        let result =
+            service.resolve_config(&workflow, &task, &[], None, None, false, &[], None, None);
         assert!(matches!(result, Err(AgentConfigError::NotInActiveStage)));
     }
 
@@ -131,7 +134,8 @@ mod tests {
         // Task in an unknown stage
         let task = Task::new("task-1", "Test", "Desc", "nonexistent", "now");
 
-        let result = service.resolve_config(&workflow, &task, &[], None, None, false, &[], None);
+        let result =
+            service.resolve_config(&workflow, &task, &[], None, None, false, &[], None, None);
         assert!(matches!(result, Err(AgentConfigError::UnknownStage(_))));
     }
 }

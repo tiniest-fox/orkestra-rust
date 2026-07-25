@@ -31,7 +31,9 @@ pub fn execute(
 
     match decision {
         "approve" => {
-            // Delegate to handle_artifact which stores the artifact and auto-advances.
+            // Approval implies an agentic gate — automated gates are mutually exclusive
+            // (enforced in spawn_one_gate). Pass false so handle_artifact does not
+            // re-enter AwaitingGate.
             super::handle_artifact::execute(
                 workflow,
                 iteration_service,
@@ -39,6 +41,7 @@ pub fn execute(
                 content,
                 current_stage,
                 now,
+                false,
             )
         }
         "reject" => {

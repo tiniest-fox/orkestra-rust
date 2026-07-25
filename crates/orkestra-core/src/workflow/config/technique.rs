@@ -5,11 +5,24 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use orkestra_types::config::ToolRestriction;
+use orkestra_types::config::{GateConfig, ToolRestriction};
 
 // ============================================================================
 // Public Types
 // ============================================================================
+
+/// Resolved configuration from a set of techniques.
+#[derive(Debug, Clone)]
+pub struct ResolvedTechniques {
+    /// Highest-ranked model from the technique set, if any technique specifies one.
+    pub model: Option<String>,
+    /// Merged, deduplicated tool restrictions from all techniques.
+    pub disallowed_tools: Vec<ToolRestriction>,
+    /// Sorted, deduplicated check script names from all techniques.
+    pub checks: Vec<String>,
+    /// Concatenated technique bodies joined by `"\n\n"`.
+    pub prompt_body: String,
+}
 
 /// A parsed technique ready for use in stage configuration.
 #[derive(Debug, Clone)]
@@ -224,6 +237,90 @@ pub fn resolve_disallowed_tools(techniques: &[&Technique]) -> Vec<ToolRestrictio
         .collect();
     tools.sort_by(|a, b| a.pattern.cmp(&b.pattern));
     tools
+}
+
+// -- Stage Resolution --
+
+/// Load and resolve a set of techniques into a merged configuration.
+///
+/// Loads technique files from `project_root/.orkestra/techniques/{name}.md`,
+/// resolves model via `models.yaml` (if present), merges tool restrictions and
+/// checks, and concatenates prompt bodies.
+pub fn load_and_resolve_techniques(
+    project_root: &Path,
+    technique_names: &[String],
+) -> Result<ResolvedTechniques, TechniqueLoadError> {
+    let techniques_dir = project_root.join(".orkestra/techniques");
+    let techniques: Vec<Technique> = technique_names
+        .iter()
+        .map(|name| parse_technique(&techniques_dir.join(format!("{name}.md"))))
+        .collect::<Result<_, _>>()?;
+
+    let tech_refs: Vec<&Technique> = techniques.iter().collect();
+
+    // Load model registry if present; fall back to first technique's raw model value.
+    let registry_path = project_root.join(".orkestra/models.yaml");
+    let model = if registry_path.exists() {
+        let content = std::fs::read_to_string(&registry_path)?;
+        let registry = parse_model_registry(&content)?;
+        Some(resolve_model(&tech_refs, &registry))
+    } else {
+        tech_refs.iter().find_map(|t| t.model.clone())
+    };
+
+    let disallowed_tools = resolve_disallowed_tools(&tech_refs);
+    let checks = resolve_checks(&tech_refs);
+    let prompt_body = techniques
+        .iter()
+        .map(|t| t.body.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    Ok(ResolvedTechniques {
+        model,
+        disallowed_tools,
+        checks,
+        prompt_body,
+    })
+}
+
+/// Build an automated gate from a list of check script names.
+///
+/// Reads each check from `project_root/.orkestra/checks/{name}.sh`, parses its
+/// metadata for the timeout, builds a compound shell command that runs them in
+/// sequence, and returns `GateConfig::Automated`. Returns `Ok(None)` when
+/// `check_names` is empty.
+pub fn build_gate_from_checks(
+    project_root: &Path,
+    check_names: &[String],
+) -> Result<Option<GateConfig>, TechniqueLoadError> {
+    if check_names.is_empty() {
+        return Ok(None);
+    }
+
+    let checks_dir = project_root.join(".orkestra/checks");
+    let mut timeout_total: u64 = 0;
+    let mut commands: Vec<String> = Vec::new();
+
+    for name in check_names {
+        let path = checks_dir.join(format!("{name}.sh"));
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                TechniqueLoadError::NotFound(path.clone())
+            } else {
+                TechniqueLoadError::Io(e)
+            }
+        })?;
+        let meta = parse_check_metadata(&content)?;
+        timeout_total += meta.timeout_seconds;
+        commands.push(format!("$ORKESTRA_PROJECT_ROOT/.orkestra/checks/{name}.sh"));
+    }
+
+    let command = commands.join(" && ");
+    Ok(Some(GateConfig::Automated {
+        command,
+        timeout_seconds: timeout_total,
+    }))
 }
 
 // -- Helpers --
@@ -488,5 +585,190 @@ mod tests {
 
         let result = resolve_disallowed_tools(&[&t1, &t2]);
         assert!(result.is_empty());
+    }
+
+    // -- load_and_resolve_techniques --
+
+    fn write_technique(dir: &std::path::Path, name: &str, content: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.md")), content).unwrap();
+    }
+
+    fn write_check(dir: &std::path::Path, name: &str, content: &str, executable: bool) {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("{name}.sh"));
+        std::fs::write(&path, content).unwrap();
+        if executable {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_load_and_resolve_techniques_basic() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let techniques_dir = root.join(".orkestra/techniques");
+
+        write_technique(
+            &techniques_dir,
+            "alpha",
+            "---\ntitle: Alpha\ndescription: First\nmodel: opus\n---\nAlpha body",
+        );
+        write_technique(
+            &techniques_dir,
+            "beta",
+            "---\ntitle: Beta\ndescription: Second\ndisallowed_tools:\n  - pattern: Edit\n---\nBeta body",
+        );
+
+        // Write models.yaml
+        let models_path = root.join(".orkestra/models.yaml");
+        std::fs::create_dir_all(models_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &models_path,
+            "default: haiku\nranked:\n  - opus\n  - sonnet\n  - haiku\n",
+        )
+        .unwrap();
+
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+        let resolved = load_and_resolve_techniques(root, &names).unwrap();
+
+        assert_eq!(resolved.model, Some("opus".to_string()));
+        assert_eq!(resolved.disallowed_tools.len(), 1);
+        assert_eq!(resolved.disallowed_tools[0].pattern, "Edit");
+        assert!(resolved.checks.is_empty());
+        assert_eq!(resolved.prompt_body, "Alpha body\n\nBeta body");
+    }
+
+    #[test]
+    fn test_load_and_resolve_techniques_no_models_yaml() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let techniques_dir = root.join(".orkestra/techniques");
+
+        write_technique(
+            &techniques_dir,
+            "solo",
+            "---\ntitle: Solo\ndescription: Only one\nmodel: sonnet\n---\nSolo body",
+        );
+
+        let names = vec!["solo".to_string()];
+        let resolved = load_and_resolve_techniques(root, &names).unwrap();
+
+        // Falls back to first technique's raw model value
+        assert_eq!(resolved.model, Some("sonnet".to_string()));
+        assert_eq!(resolved.prompt_body, "Solo body");
+    }
+
+    #[test]
+    fn test_load_and_resolve_techniques_missing_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let names = vec!["nonexistent".to_string()];
+        let result = load_and_resolve_techniques(root, &names);
+        assert!(matches!(result, Err(TechniqueLoadError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_load_and_resolve_techniques_with_checks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let techniques_dir = root.join(".orkestra/techniques");
+
+        write_technique(
+            &techniques_dir,
+            "checked",
+            "---\ntitle: Checked\ndescription: Has a check\ncheck: my-check\n---\nChecked body",
+        );
+
+        let names = vec!["checked".to_string()];
+        let resolved = load_and_resolve_techniques(root, &names).unwrap();
+
+        assert_eq!(resolved.checks, vec!["my-check".to_string()]);
+    }
+
+    // -- build_gate_from_checks --
+
+    #[test]
+    fn test_build_gate_from_checks_empty() {
+        let dir = tempdir().unwrap();
+        let result = build_gate_from_checks(dir.path(), &[]).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_build_gate_from_checks_single() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let checks_dir = root.join(".orkestra/checks");
+
+        write_check(
+            &checks_dir,
+            "lint",
+            "#!/bin/bash\n# ---\n# title: Lint\n# description: Run linter\n# timeout_seconds: 60\n# ---\nexit 0",
+            true,
+        );
+
+        let names = vec!["lint".to_string()];
+        let gate = build_gate_from_checks(root, &names).unwrap();
+
+        assert!(gate.is_some());
+        if let Some(GateConfig::Automated {
+            command,
+            timeout_seconds,
+        }) = gate
+        {
+            assert!(command.contains("$ORKESTRA_PROJECT_ROOT/.orkestra/checks/lint.sh"));
+            assert_eq!(timeout_seconds, 60);
+        } else {
+            panic!("Expected Automated gate");
+        }
+    }
+
+    #[test]
+    fn test_build_gate_from_checks_multiple() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let checks_dir = root.join(".orkestra/checks");
+
+        write_check(
+            &checks_dir,
+            "lint",
+            "#!/bin/bash\n# ---\n# title: Lint\n# description: Run linter\n# timeout_seconds: 60\n# ---\nexit 0",
+            true,
+        );
+        write_check(
+            &checks_dir,
+            "tests",
+            "#!/bin/bash\n# ---\n# title: Tests\n# description: Run tests\n# timeout_seconds: 120\n# ---\nexit 0",
+            true,
+        );
+
+        let names = vec!["lint".to_string(), "tests".to_string()];
+        let gate = build_gate_from_checks(root, &names).unwrap();
+
+        if let Some(GateConfig::Automated {
+            command,
+            timeout_seconds,
+        }) = gate
+        {
+            assert!(command.contains("lint.sh"));
+            assert!(command.contains("tests.sh"));
+            assert!(command.contains(" && "));
+            assert_eq!(timeout_seconds, 180); // 60 + 120
+        } else {
+            panic!("Expected Automated gate");
+        }
+    }
+
+    #[test]
+    fn test_build_gate_from_checks_missing_file() {
+        let dir = tempdir().unwrap();
+        let result = build_gate_from_checks(dir.path(), &["missing".to_string()]);
+        assert!(matches!(result, Err(TechniqueLoadError::NotFound(_))));
     }
 }

@@ -20,8 +20,27 @@ const DEFAULT_PROMPTS: &[(&str, &str)] = &[
     ("vibe.md", include_str!("defaults/agents/vibe.md")),
 ];
 
+const DEFAULT_TECHNIQUES: &[(&str, &str)] = &[
+    (
+        "implementation-conventions.md",
+        include_str!("defaults/techniques/implementation-conventions.md"),
+    ),
+    (
+        "standard-verification.md",
+        include_str!("defaults/techniques/standard-verification.md"),
+    ),
+    (
+        "standard-review.md",
+        include_str!("defaults/techniques/standard-review.md"),
+    ),
+    (
+        "compound-learning-capture.md",
+        include_str!("defaults/techniques/compound-learning-capture.md"),
+    ),
+];
+
 /// Subdirectories created inside `.orkestra/` on init.
-const ORKESTRA_SUBDIRS: &[&str] = &[".database", ".logs", "scripts", "agents"];
+const ORKESTRA_SUBDIRS: &[&str] = &[".database", ".logs", "scripts", "agents", "techniques"];
 
 /// Lines that must appear in the project's `.gitignore`.
 const REQUIRED_GITIGNORE_ENTRIES: &[&str] = &[
@@ -63,6 +82,10 @@ pub fn ensure_orkestra_project(orkestra_dir: &Path) -> std::io::Result<()> {
 
     for (filename, content) in DEFAULT_PROMPTS {
         write_default(orkestra_dir, &format!("agents/{filename}"), content)?;
+    }
+
+    for (filename, content) in DEFAULT_TECHNIQUES {
+        write_default(orkestra_dir, &format!("techniques/{filename}"), content)?;
     }
 
     if first_init {
@@ -348,6 +371,62 @@ mod tests {
                 mode & 0o111,
                 0o111,
                 "write_default_executable should apply executable bit to pre-existing files"
+            );
+        }
+    }
+
+    #[test]
+    fn test_techniques_dir_and_files_created() {
+        let temp_dir = TempDir::new().unwrap();
+        let orkestra_dir = temp_dir.path().join(".orkestra");
+
+        ensure_orkestra_project(&orkestra_dir).unwrap();
+
+        let techniques_dir = orkestra_dir.join("techniques");
+        assert!(
+            techniques_dir.exists(),
+            "techniques/ directory should be created"
+        );
+
+        for (filename, _) in DEFAULT_TECHNIQUES {
+            let path = techniques_dir.join(filename);
+            assert!(path.exists(), "technique file {filename} should be created");
+        }
+    }
+
+    #[test]
+    fn test_techniques_not_overwritten_on_reinit() {
+        let temp_dir = TempDir::new().unwrap();
+        let orkestra_dir = temp_dir.path().join(".orkestra");
+        fs::create_dir_all(orkestra_dir.join("techniques")).unwrap();
+
+        let custom_path = orkestra_dir.join("techniques/implementation-conventions.md");
+        fs::write(&custom_path, "custom content").unwrap();
+
+        ensure_orkestra_project(&orkestra_dir).unwrap();
+
+        let content = fs::read_to_string(&custom_path).unwrap();
+        assert_eq!(
+            content, "custom content",
+            "should not overwrite existing technique file"
+        );
+    }
+
+    #[test]
+    fn test_default_techniques_parse() {
+        use crate::workflow::config::technique::parse_technique;
+        use tempfile::tempdir;
+
+        for (filename, content) in DEFAULT_TECHNIQUES {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join(filename);
+            std::fs::write(&path, content).unwrap();
+            let technique = parse_technique(&path)
+                .unwrap_or_else(|e| panic!("Failed to parse default technique {filename}: {e}"));
+            assert!(!technique.title.is_empty(), "{filename} has empty title");
+            assert!(
+                !technique.description.is_empty(),
+                "{filename} has empty description"
             );
         }
     }

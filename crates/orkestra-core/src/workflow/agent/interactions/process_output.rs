@@ -1,5 +1,7 @@
 //! Process completed agent output. Routes `StageOutput` variants to handlers.
 
+use std::path::Path;
+
 use crate::orkestra_debug;
 use crate::workflow::config::WorkflowConfig;
 use crate::workflow::domain::{LogEntry, Task, WorkflowArtifact};
@@ -16,6 +18,7 @@ pub fn execute(
     iteration_service: &IterationService,
     task_id: &str,
     output: StageOutput,
+    project_root: Option<&Path>,
 ) -> WorkflowResult<Task> {
     let mut task = store
         .get_task(task_id)?
@@ -70,6 +73,7 @@ pub fn execute(
         &current_stage,
         &now,
         &iteration_id,
+        project_root,
     )?;
 
     orkestra_debug!(
@@ -102,6 +106,7 @@ pub(crate) fn dispatch_output(
     current_stage: &str,
     now: &str,
     iteration_id: &str,
+    project_root: Option<&Path>,
 ) -> WorkflowResult<()> {
     // Extract resources before the match consumes the output.
     let output_resources = output.resources().to_vec();
@@ -131,6 +136,7 @@ pub(crate) fn dispatch_output(
             &content,
             current_stage,
             now,
+            project_root,
         )?,
         StageOutput::Approval {
             decision,
@@ -146,6 +152,7 @@ pub(crate) fn dispatch_output(
             &content,
             route_to.as_deref(),
             now,
+            project_root,
         )?,
         StageOutput::Subtasks {
             content, subtasks, ..
@@ -359,6 +366,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 
@@ -415,6 +423,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 
@@ -465,6 +474,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 
@@ -517,6 +527,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 
@@ -548,6 +559,7 @@ mod tests {
             "planning",
             FIXTURE_TIMESTAMP,
             &iteration_id,
+            None,
         )
         .unwrap();
 

@@ -247,7 +247,8 @@ impl TestEnv {
             .with_skip_env_resolution(),
         );
 
-        let mut orchestrator = OrchestratorLoop::new(api.clone(), stage_executor);
+        let mut orchestrator = OrchestratorLoop::new(api.clone(), stage_executor)
+            .with_project_root(temp_dir.path().to_path_buf());
         orchestrator.set_sync_background(true);
         api.lock().unwrap().set_sync_setup(true);
 

@@ -355,6 +355,7 @@ impl WorkflowConfig {
         self.validate_model_fields(&mut errors);
         self.validate_disallowed_tools(&mut errors);
         self.validate_gates(&mut errors);
+        self.validate_technique_fields(&mut errors);
 
         errors
     }
@@ -503,6 +504,27 @@ impl WorkflowConfig {
                     }
                 }
                 // GateConfig::Agentic needs no validation
+            }
+        }
+    }
+
+    fn validate_technique_fields(&self, errors: &mut Vec<String>) {
+        for (flow_name, flow) in &self.flows {
+            for stage in &flow.stages {
+                for (i, name) in stage.techniques.iter().enumerate() {
+                    if name.trim().is_empty() {
+                        errors.push(format!(
+                            "Flow \"{flow_name}\" stage \"{}\" has techniques[{i}] with an empty name.",
+                            stage.name
+                        ));
+                    }
+                }
+                if !stage.techniques.is_empty() && stage.prompt.is_some() {
+                    errors.push(format!(
+                        "stage '{}' has both techniques and prompt — prompt will be ignored",
+                        stage.name
+                    ));
+                }
             }
         }
     }
@@ -1509,6 +1531,63 @@ vibe:
         assert_eq!(vibe_stage.name, "vibe");
         assert_eq!(vibe_stage.prompt_path(), Some("vibe.md".to_string()));
         assert!(vibe_stage.model.is_none());
+    }
+
+    #[test]
+    fn test_validate_technique_empty_name() {
+        let mut stage = StageConfig::new("work", "summary");
+        stage.techniques = vec![String::new()];
+        let workflow = WorkflowConfig::new(vec![stage]);
+        let errors = workflow.validate();
+        assert!(
+            errors.iter().any(|e| e.contains("empty name")),
+            "Expected empty technique name error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_technique_and_prompt_warns() {
+        let stage = StageConfig::new("work", "summary")
+            .with_techniques(vec!["some-technique".into()])
+            .with_prompt("work.md");
+        let workflow = WorkflowConfig::new(vec![stage]);
+        let errors = workflow.validate();
+        assert!(
+            errors.iter().any(|e| e.contains("prompt will be ignored")),
+            "Expected techniques+prompt warning, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_techniques_valid() {
+        let stage =
+            StageConfig::new("work", "summary").with_techniques(vec!["some-technique".into()]);
+        let workflow = WorkflowConfig::new(vec![stage]);
+        let errors = workflow.validate();
+        assert!(
+            !errors.iter().any(|e| e.contains("technique")),
+            "Expected no technique errors, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_techniques_roundtrip_yaml() {
+        let stage = StageConfig::new("work", "summary")
+            .with_techniques(vec!["alpha".into(), "beta".into()]);
+        let yaml = serde_yaml::to_string(&stage).unwrap();
+        assert!(yaml.contains("techniques:"), "Should serialize techniques");
+        let parsed: StageConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.techniques, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_techniques_omitted_when_empty() {
+        let stage = StageConfig::new("work", "summary");
+        let yaml = serde_yaml::to_string(&stage).unwrap();
+        assert!(
+            !yaml.contains("techniques"),
+            "Empty techniques should be omitted"
+        );
     }
 
     #[test]

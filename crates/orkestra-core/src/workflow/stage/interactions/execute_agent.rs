@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use crate::orkestra_debug;
-use crate::workflow::config::{ToolRestriction, WorkflowConfig};
+use crate::workflow::config::{load_and_resolve_techniques, ToolRestriction, WorkflowConfig};
 use crate::workflow::domain::{IterationTrigger, Task};
 use crate::workflow::execution::{
     build_resume_prompt, AgentRunnerTrait, IntegrationErrorContext, ProviderCapabilities,
@@ -83,13 +83,33 @@ pub(crate) fn execute(
         workflow.stage(&task.flow, stage)
     };
 
+    // Resolve techniques if stage uses them
+    let resolved_techniques = if let Some(sc) = stage_config {
+        if sc.techniques.is_empty() {
+            None
+        } else {
+            Some(
+                load_and_resolve_techniques(prompt_service.project_root(), &sc.techniques)
+                    .map_err(|e| {
+                        ExecutionError::ConfigError(format!("Technique resolution failed: {e}"))
+                    })?,
+            )
+        }
+    } else {
+        None
+    };
+
     // 1. Get JSON schema (needed for BOTH first spawn and resume)
     let json_schema = get_stage_schema(workflow, prompt_service, task, stage, stage_config)?;
     let compact_json_schema = orkestra_schema::compact_schema(&json_schema)
         .map_err(|e| ExecutionError::ConfigError(format!("Invalid JSON schema: {e}")))?;
 
     // 2. Resolve the provider to check capabilities
-    let model_spec = stage_config.and_then(|s| s.model.clone());
+    let model_spec = if let Some(ref resolved) = resolved_techniques {
+        resolved.model.clone()
+    } else {
+        stage_config.and_then(|s| s.model.clone())
+    };
     let resolved = registry.resolve(model_spec.as_deref())?;
 
     // 3. Extract feedback from trigger (used by both system prompt and user message)
@@ -109,8 +129,13 @@ pub(crate) fn execute(
     )?;
 
     // 5. Apply tool restrictions (split into prompt text + CLI patterns)
-    let effective_tools =
-        stage_config.map_or(&[] as &[ToolRestriction], |s| s.disallowed_tools.as_slice());
+    let technique_tools_owned: Vec<ToolRestriction>;
+    let effective_tools: &[ToolRestriction] = if let Some(ref resolved) = resolved_techniques {
+        technique_tools_owned = resolved.disallowed_tools.clone();
+        &technique_tools_owned
+    } else {
+        stage_config.map_or(&[] as &[ToolRestriction], |s| s.disallowed_tools.as_slice())
+    };
     let (system_prompt, disallowed_patterns) =
         apply_tool_restrictions(system_prompt, effective_tools)?;
 

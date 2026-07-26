@@ -54,7 +54,33 @@ export function createDemoTransport(): Transport {
         case "get_diff":
           return resolve({ files: [] });
         case "get_branch_commits":
-          return resolve({ commits: [], has_uncommitted_changes: false });
+          return resolve({
+            commits: [
+              {
+                hash: "abc1234",
+                message: "Add subtask feature",
+                body: null,
+                author: "Alice",
+                timestamp: new Date(Date.now() - 3600000).toISOString(),
+                file_count: 3,
+                from_subtask: {
+                  parent_id: "parent-task-id",
+                  subtask_id: "sub-task-id",
+                  title: "Add subtask feature implementation",
+                },
+              },
+              {
+                hash: "def5678",
+                message: "Fix login bug",
+                body: null,
+                author: "Bob",
+                timestamp: new Date(Date.now() - 7200000).toISOString(),
+                file_count: 1,
+                from_subtask: null,
+              },
+            ],
+            has_uncommitted_changes: false,
+          });
         case "get_uncommitted_diff":
           return resolve({ files: [] });
         case "get_batch_file_counts":

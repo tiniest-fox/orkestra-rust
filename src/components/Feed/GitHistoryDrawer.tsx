@@ -61,6 +61,11 @@ function CommitRow({ commit, fileCount, selected, isMobile, onClick }: CommitRow
         <span className="font-sans text-[12px] text-text-primary leading-snug line-clamp-2">
           {commit.message}
         </span>
+        {commit.from_subtask && (
+          <span className="text-forge-mono-label text-text-quaternary ml-1 shrink-0">
+            ↳ sub-Trak
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-1.5 font-mono text-[10px] text-text-quaternary">
         <span className="truncate max-w-[80px]">{commit.author.split(" ")[0]}</span>
@@ -151,6 +156,12 @@ function CommitDetailPanel({
                 {commit.body}
               </pre>
             )}
+          </div>
+        )}
+        {commit.from_subtask && (
+          <div className="flex items-center gap-2 text-forge-mono-sm text-text-tertiary mb-2">
+            <span>↳ from sub-Trak</span>
+            <span className="font-medium text-text-secondary">"{commit.from_subtask.title}"</span>
           </div>
         )}
         <div className="flex items-center gap-3 font-mono text-[10px] text-text-quaternary">

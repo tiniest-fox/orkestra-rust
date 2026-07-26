@@ -760,6 +760,19 @@ export interface SyncStatus {
 }
 
 /**
+ * Sub-Trak provenance attached to a commit — present when the commit originated
+ * from a sub-Trak worktree and was merged into the parent.
+ */
+export interface SubtaskProvenance {
+  /** Parent task ID. */
+  parent_id: string;
+  /** Sub-Trak task ID. */
+  subtask_id: string;
+  /** Sub-Trak title. */
+  title: string;
+}
+
+/**
  * Commit metadata returned by workflow_get_commit_log.
  */
 export interface CommitInfo {
@@ -775,6 +788,8 @@ export interface CommitInfo {
   timestamp: string;
   /** Number of files changed in this commit (null when not yet loaded). */
   file_count: number | null;
+  /** Sub-Trak provenance — present when commit originated from a sub-Trak, null otherwise. */
+  from_subtask: SubtaskProvenance | null;
 }
 
 /**

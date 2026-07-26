@@ -22,6 +22,7 @@ pub(crate) struct CommitEntry {
     pub message: String,
     pub author: String,
     pub timestamp: String,
+    pub from_subtask: Option<String>,
 }
 
 /// A single entry in the activity log timeline.

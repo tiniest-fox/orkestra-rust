@@ -107,7 +107,7 @@ fn fetch_branch_commits(worktree_path: &Path, base_branch: &str) -> Vec<CommitEn
         .args([
             "log",
             "-200",
-            "--format=%x1e%h%x00%s%x00%an%x00%aI",
+            "--format=%x1e%h%x00%s%x00%an%x00%aI%x00%b",
             &format!("{base_branch}..HEAD"),
         ])
         .current_dir(worktree_path)
@@ -126,13 +126,18 @@ fn fetch_branch_commits(worktree_path: &Path, base_branch: &str) -> Vec<CommitEn
             if record.is_empty() {
                 return None;
             }
-            let parts: Vec<&str> = record.splitn(4, '\0').collect();
-            if parts.len() == 4 {
+            let parts: Vec<&str> = record.splitn(5, '\0').collect();
+            if parts.len() == 5 {
+                let from_subtask = parts
+                    .get(4)
+                    .and_then(|b| orkestra_types::parse_subtask_trailers(b))
+                    .map(|p| p.title);
                 Some(CommitEntry {
                     hash: parts[0].to_string(),
                     message: parts[1].to_string(),
                     author: parts[2].to_string(),
                     timestamp: parts[3].to_string(),
+                    from_subtask,
                 })
             } else {
                 None
@@ -166,8 +171,17 @@ fn format_activity_log(entries: &[ActivityEntry]) -> String {
                     .expect("write to String is infallible");
             }
             ActivityEntry::Commit(c) => {
-                write!(s, "> **[{}]** {} — *{}*\n\n", c.hash, c.message, c.author)
+                if let Some(title) = &c.from_subtask {
+                    write!(
+                        s,
+                        "> **[{}]** {} — *{}* (↳ from sub-Trak \"{}\")\n\n",
+                        c.hash, c.message, c.author, title
+                    )
                     .expect("write to String is infallible");
+                } else {
+                    write!(s, "> **[{}]** {} — *{}*\n\n", c.hash, c.message, c.author)
+                        .expect("write to String is infallible");
+                }
             }
         }
         s
@@ -205,6 +219,7 @@ mod tests {
             message: message.to_string(),
             author: author.to_string(),
             timestamp: timestamp.to_string(),
+            from_subtask: None,
         }
     }
 
@@ -548,6 +563,37 @@ mod tests {
         let timeline = build_timeline(&[], commits);
         let formatted = format_activity_log(&timeline);
         assert_eq!(formatted, "> **[abc]** msg — *author*\n\n");
+    }
+
+    #[test]
+    fn test_commit_entry_with_subtask_annotation() {
+        let entry = CommitEntry {
+            hash: "abc1234".to_string(),
+            message: "Add auth layer".to_string(),
+            author: "Alice".to_string(),
+            timestamp: "2024-01-01T10:00:00Z".to_string(),
+            from_subtask: Some("Implement authentication".to_string()),
+        };
+        let entries = vec![ActivityEntry::Commit(entry)];
+        let formatted = format_activity_log(&entries);
+        assert_eq!(
+            formatted,
+            "> **[abc1234]** Add auth layer — *Alice* (↳ from sub-Trak \"Implement authentication\")\n\n"
+        );
+    }
+
+    #[test]
+    fn test_commit_entry_without_subtask_annotation() {
+        let entries = vec![ActivityEntry::Commit(make_commit(
+            "abc1234",
+            "Fix the bug",
+            "Alice",
+            "2024-01-01T10:00:00Z",
+        ))];
+        let formatted = format_activity_log(&entries);
+        // No annotation when from_subtask is None
+        assert_eq!(formatted, "> **[abc1234]** Fix the bug — *Alice*\n\n");
+        assert!(!formatted.contains("↳"));
     }
 
     #[test]

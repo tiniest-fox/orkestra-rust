@@ -1587,3 +1587,250 @@ fn manual_subtask_inherits_parent_flow() {
         "Subtask's first stage should be 'work' (hotfix flow's first stage)"
     );
 }
+
+// =============================================================================
+// Subtask Trailer Infrastructure
+// =============================================================================
+
+/// Squash-merge commits from subtasks contain provenance trailers, and the
+/// parent task's activity log annotates those commits with `from sub-Trak`.
+///
+/// A single subtask is inlined onto the parent (no separate subtask record, no
+/// integration merge), so this test uses two subtasks — which creates real subtask
+/// records with integration merges — to exercise the trailer infrastructure.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn test_subtask_trailers_in_commit_and_activity_log() {
+    use std::fs;
+    use std::process::Command;
+
+    let workflow = enable_auto_merge(workflows::with_subtasks());
+    let env = TestEnv::with_git(&workflow, &["planner", "breakdown", "worker", "reviewer"]);
+
+    // Step 1: Create parent task
+    let parent = env.create_task("Feature", "Build a feature", None);
+    let parent_id = parent.id.clone();
+
+    // Step 2: Drive parent through planning stage
+    env.set_output(
+        &parent_id,
+        MockAgentOutput::Artifact {
+            name: "plan".into(),
+            content: "Parent implementation plan".into(),
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    env.advance(); // spawn planner
+    env.advance(); // process plan output -> AwaitingApproval
+    env.api().approve(&parent_id).unwrap();
+    env.advance(); // commit + advance to breakdown
+
+    // Step 3: Drive parent through breakdown stage with 2 subtasks.
+    // Two subtasks are required: a single subtask is inlined on the parent
+    // (no integration merge, no trailers). With 2+, real subtask records are
+    // created and each integration merge carries provenance trailers.
+    env.set_output(
+        &parent_id,
+        MockAgentOutput::Subtasks {
+            content: "Technical design".into(),
+            subtasks: vec![
+                SubtaskOutput {
+                    title: "Implement auth layer".into(),
+                    description: "Add authentication".into(),
+                    detailed_instructions: "Implement JWT auth".into(),
+                    depends_on: vec![],
+                },
+                SubtaskOutput {
+                    title: "Implement tests".into(),
+                    description: "Add test coverage".into(),
+                    detailed_instructions: "Write integration tests".into(),
+                    depends_on: vec![0],
+                },
+            ],
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    env.advance(); // spawn breakdown agent
+    env.advance(); // process subtasks output -> AwaitingApproval
+    env.api().approve(&parent_id).unwrap();
+    env.advance(); // commit + advance (creates 2 subtasks, parent -> WaitingOnChildren)
+
+    let subtask_list = env.api().list_subtasks(&parent_id).unwrap();
+    assert_eq!(subtask_list.len(), 2, "Should have 2 subtasks");
+    let subtask1_id = subtask_list
+        .iter()
+        .find(|s| s.title == "Implement auth layer")
+        .expect("subtask1 not found")
+        .id
+        .clone();
+    let subtask2_id = subtask_list
+        .iter()
+        .find(|s| s.title == "Implement tests")
+        .expect("subtask2 not found")
+        .id
+        .clone();
+
+    // Step 4: Complete subtask1 through work -> review -> integration
+    env.advance(); // setup_awaiting: creates worktree for subtask1 (subtask2 blocked by dep)
+
+    let subtask1 = env.api().get_task(&subtask1_id).unwrap();
+    fs::write(
+        Path::new(subtask1.worktree_path.as_ref().expect("subtask1 worktree")).join("auth.rs"),
+        "// JWT auth implementation\n",
+    )
+    .expect("write auth.rs to subtask1 worktree");
+
+    env.set_output(
+        &subtask1_id,
+        MockAgentOutput::Artifact {
+            name: "summary".into(),
+            content: "Auth layer implemented".into(),
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    env.advance(); // spawn worker
+    env.advance(); // process work output -> AwaitingApproval
+    env.api().approve(&subtask1_id).unwrap();
+    env.advance(); // commit + advance to review
+
+    env.set_output(
+        &subtask1_id,
+        MockAgentOutput::Approval {
+            decision: "approve".into(),
+            content: "Looks good".into(),
+            route_to: None,
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    env.advance(); // spawn reviewer -> AwaitingApproval
+    env.api().approve(&subtask1_id).unwrap();
+    env.advance(); // commit pipeline -> Done -> integration -> Archived
+
+    let subtask1_after = env.api().get_task(&subtask1_id).unwrap();
+    assert!(
+        subtask1_after.is_archived(),
+        "subtask1 should be Archived after integration, got: {:?}",
+        subtask1_after.state
+    );
+
+    // Step 5: Verify trailers in the squash-merge commit on parent branch
+    let parent = env.api().get_task(&parent_id).unwrap();
+    let parent_worktree = parent
+        .worktree_path
+        .as_ref()
+        .expect("parent must have worktree")
+        .clone();
+    let parent_branch = parent
+        .branch_name
+        .as_deref()
+        .expect("parent must have branch")
+        .to_string();
+
+    Command::new("git")
+        .args(["reset", "--hard", &parent_branch])
+        .current_dir(&parent_worktree)
+        .output()
+        .expect("git reset parent worktree");
+
+    let body_output = Command::new("git")
+        .args(["log", "-1", "--format=%b"])
+        .current_dir(&parent_worktree)
+        .output()
+        .expect("git log body");
+    let commit_body = String::from_utf8_lossy(&body_output.stdout)
+        .trim()
+        .to_string();
+
+    assert!(
+        commit_body.contains("Subtrak-of:"),
+        "Commit body should contain Subtrak-of trailer. Got:\n{commit_body}"
+    );
+    assert!(
+        commit_body.contains("Subtrak-id:"),
+        "Commit body should contain Subtrak-id trailer. Got:\n{commit_body}"
+    );
+    assert!(
+        commit_body.contains("Subtrak-title: Implement auth layer"),
+        "Commit body should contain Subtrak-title trailer. Got:\n{commit_body}"
+    );
+
+    // Step 6: Complete subtask2 so parent can advance to work
+    env.advance(); // setup_awaiting: creates worktree for subtask2 (dep on subtask1 now satisfied)
+
+    let subtask2 = env.api().get_task(&subtask2_id).unwrap();
+    fs::write(
+        Path::new(subtask2.worktree_path.as_ref().expect("subtask2 worktree")).join("tests.rs"),
+        "// Integration tests\n",
+    )
+    .expect("write tests.rs to subtask2 worktree");
+
+    env.set_output(
+        &subtask2_id,
+        MockAgentOutput::Artifact {
+            name: "summary".into(),
+            content: "Tests implemented".into(),
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    env.advance(); // spawn worker
+    env.advance(); // process work output -> AwaitingApproval
+    env.api().approve(&subtask2_id).unwrap();
+    env.advance(); // commit + advance to review
+
+    env.set_output(
+        &subtask2_id,
+        MockAgentOutput::Approval {
+            decision: "approve".into(),
+            content: "Looks good".into(),
+            route_to: None,
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    env.advance(); // spawn reviewer -> AwaitingApproval
+    env.api().approve(&subtask2_id).unwrap();
+    env.advance(); // commit pipeline -> Done -> integration -> Archived
+
+    let subtask2_after = env.api().get_task(&subtask2_id).unwrap();
+    assert!(
+        subtask2_after.is_archived(),
+        "subtask2 should be Archived after integration, got: {:?}",
+        subtask2_after.state
+    );
+
+    // Step 7: Verify activity log annotation on parent's next agent spawn.
+    // check_parent_completions fires in the snapshot-based phase; the snapshot is only
+    // refreshed after advance_all_committed, not after check_parent_completions. So the
+    // tick that advances the parent (WaitingOnChildren -> Queued{work}) does NOT also
+    // spawn the work agent — find_spawn_candidates still sees the stale snapshot. A
+    // second advance with a fresh snapshot triggers the spawn and materialize_artifacts.
+    env.advance(); // check_parent_completions -> parent Queued{work} (snapshot stale, spawn deferred)
+    env.set_output(
+        &parent_id,
+        MockAgentOutput::Artifact {
+            name: "summary".into(),
+            content: "Parent work done".into(),
+            activity_log: None,
+            resources: vec![],
+        },
+    );
+    env.advance(); // fresh snapshot -> find_spawn_candidates -> spawn work agent -> materialize_artifacts
+
+    let activity_log_path =
+        Path::new(&parent_worktree).join(".orkestra/.artifacts/activity_log.md");
+    assert!(
+        activity_log_path.exists(),
+        "activity_log.md should exist after parent work agent spawn"
+    );
+
+    let content = fs::read_to_string(&activity_log_path).unwrap();
+    assert!(
+        content.contains("from sub-Trak \"Implement auth layer\""),
+        "activity_log.md should annotate subtask commit with subtask title. Got:\n{content}"
+    );
+}

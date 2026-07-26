@@ -68,7 +68,19 @@ pub(crate) fn execute(
     // The squash commit uses the task title as its message — the AI-generated message
     // goes on the merge commit created on the target branch by merge_to_branch.
     if let Some(worktree_path) = &task.worktree_path {
-        let squash_message = fallback_commit_message(&task.title, &task.id);
+        let base_squash_message = fallback_commit_message(&task.title, &task.id);
+        let squash_message = if task.is_subtask() {
+            let trailers = orkestra_types::format_subtask_trailers(
+                task.parent_id
+                    .as_deref()
+                    .expect("parent_id guaranteed by is_subtask()"),
+                &task.id,
+                &task.title,
+            );
+            format!("{}\n\n{}", base_squash_message.trim_end(), trailers)
+        } else {
+            base_squash_message
+        };
         match git.squash_commits(Path::new(worktree_path), &task.base_branch, &squash_message) {
             Ok(squashed) => {
                 if squashed {
@@ -215,12 +227,26 @@ fn perform_git_integration(
 
     // Generate AI commit message now that sync merge has succeeded (no conflict).
     // This message goes on the merge commit created on the target branch.
-    let commit_message = super::generate_commit_message::execute_for_squash(
+    let base_commit_message = super::generate_commit_message::execute_for_squash(
         git,
         params.task,
         params.workflow,
         params.commit_message_generator,
     );
+    let commit_message = if params.task.is_subtask() {
+        let trailers = orkestra_types::format_subtask_trailers(
+            params
+                .task
+                .parent_id
+                .as_deref()
+                .expect("parent_id guaranteed by is_subtask()"),
+            &params.task.id,
+            &params.task.title,
+        );
+        format!("{}\n\n{}", base_commit_message.trim_end(), trailers)
+    } else {
+        base_commit_message
+    };
 
     // Merge to target branch with the AI-generated message (--no-ff).
     match git.merge_to_branch(

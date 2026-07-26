@@ -10,6 +10,7 @@ mod iteration;
 mod log_entry;
 mod question;
 mod stage_session;
+mod subtask_provenance;
 pub(crate) mod task;
 pub mod token_usage;
 
@@ -20,6 +21,7 @@ pub use iteration::{GateResult, Iteration, IterationTrigger, PrCheckData, PrComm
 pub use log_entry::{AnnotatedLogEntry, LogEntry, OrkAction, PromptSection, TodoItem, ToolInput};
 pub use question::{Question, QuestionAnswer, QuestionOption};
 pub use stage_session::{SessionState, StageSession};
+pub use subtask_provenance::{format_subtask_trailers, parse_subtask_trailers, SubtaskProvenance};
 pub use task::{
     extract_short_id, ResolvedFeedbackIds, Task, TaskCreationMode, TaskHeader, TickSnapshot,
     VibeOrigin,

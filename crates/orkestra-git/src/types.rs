@@ -160,4 +160,6 @@ pub struct CommitInfo {
     pub timestamp: String,
     /// Number of files changed in this commit.
     pub file_count: Option<usize>,
+    /// Subtask provenance parsed from git trailers, if present.
+    pub from_subtask: Option<orkestra_types::SubtaskProvenance>,
 }

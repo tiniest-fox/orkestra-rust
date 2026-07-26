@@ -645,7 +645,10 @@ export type LogEntry =
   | { type: "gate_started"; command: string }
   | { type: "gate_output"; content: string }
   | { type: "gate_completed"; exit_code: number; passed: boolean }
-  | { type: "extracted_json"; raw_json: string; valid: boolean };
+  | { type: "extracted_json"; raw_json: string; valid: boolean }
+  | { type: "subtask_dispatched"; subtask_id: string; subtask_title: string }
+  | { type: "subtask_completed"; subtask_id: string; subtask_title: string }
+  | { type: "subtask_failed"; subtask_id: string; subtask_title: string };
 
 // =============================================================================
 // PR Status

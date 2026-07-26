@@ -204,6 +204,21 @@ pub enum LogEntry {
         /// Whether the JSON passed schema validation.
         valid: bool,
     },
+    /// A subtask was dispatched from this parent task.
+    SubtaskDispatched {
+        subtask_id: String,
+        subtask_title: String,
+    },
+    /// A subtask completed successfully.
+    SubtaskCompleted {
+        subtask_id: String,
+        subtask_title: String,
+    },
+    /// A subtask failed.
+    SubtaskFailed {
+        subtask_id: String,
+        subtask_title: String,
+    },
 }
 
 /// A log entry with associated database metadata.
@@ -239,6 +254,9 @@ impl LogEntry {
             LogEntry::GateOutput { .. } => "gate_output",
             LogEntry::GateCompleted { .. } => "gate_completed",
             LogEntry::ExtractedJson { .. } => "extracted_json",
+            LogEntry::SubtaskDispatched { .. } => "subtask_dispatched",
+            LogEntry::SubtaskCompleted { .. } => "subtask_completed",
+            LogEntry::SubtaskFailed { .. } => "subtask_failed",
         }
     }
 
@@ -289,6 +307,15 @@ impl LogEntry {
                 } else {
                     Some("extracted json (invalid)".to_string())
                 }
+            }
+            LogEntry::SubtaskDispatched { subtask_title, .. } => {
+                Some(format!("↳ Dispatched sub-Trak: \"{subtask_title}\""))
+            }
+            LogEntry::SubtaskCompleted { subtask_title, .. } => {
+                Some(format!("↳ Sub-Trak \"{subtask_title}\" completed"))
+            }
+            LogEntry::SubtaskFailed { subtask_title, .. } => {
+                Some(format!("↳ Sub-Trak \"{subtask_title}\" failed"))
             }
             _ => None,
         }
@@ -676,5 +703,82 @@ mod tests {
             entry.push_summary(),
             Some("extracted json (invalid)".to_string())
         );
+    }
+
+    #[test]
+    fn test_subtask_dispatched_type_name() {
+        let entry = LogEntry::SubtaskDispatched {
+            subtask_id: "sub-1".to_string(),
+            subtask_title: "Fix bug".to_string(),
+        };
+        assert_eq!(entry.type_name(), "subtask_dispatched");
+    }
+
+    #[test]
+    fn test_subtask_completed_type_name() {
+        let entry = LogEntry::SubtaskCompleted {
+            subtask_id: "sub-1".to_string(),
+            subtask_title: "Fix bug".to_string(),
+        };
+        assert_eq!(entry.type_name(), "subtask_completed");
+    }
+
+    #[test]
+    fn test_subtask_failed_type_name() {
+        let entry = LogEntry::SubtaskFailed {
+            subtask_id: "sub-1".to_string(),
+            subtask_title: "Fix bug".to_string(),
+        };
+        assert_eq!(entry.type_name(), "subtask_failed");
+    }
+
+    #[test]
+    fn test_subtask_dispatched_push_summary() {
+        let entry = LogEntry::SubtaskDispatched {
+            subtask_id: "sub-1".to_string(),
+            subtask_title: "Fix the flaky test".to_string(),
+        };
+        assert_eq!(
+            entry.push_summary(),
+            Some("↳ Dispatched sub-Trak: \"Fix the flaky test\"".to_string())
+        );
+    }
+
+    #[test]
+    fn test_subtask_completed_push_summary() {
+        let entry = LogEntry::SubtaskCompleted {
+            subtask_id: "sub-1".to_string(),
+            subtask_title: "Fix the flaky test".to_string(),
+        };
+        assert_eq!(
+            entry.push_summary(),
+            Some("↳ Sub-Trak \"Fix the flaky test\" completed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_subtask_failed_push_summary() {
+        let entry = LogEntry::SubtaskFailed {
+            subtask_id: "sub-1".to_string(),
+            subtask_title: "Fix the flaky test".to_string(),
+        };
+        assert_eq!(
+            entry.push_summary(),
+            Some("↳ Sub-Trak \"Fix the flaky test\" failed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_subtask_dispatched_serialization() {
+        let entry = LogEntry::SubtaskDispatched {
+            subtask_id: "sub-abc".to_string(),
+            subtask_title: "Build feature".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"type\":\"subtask_dispatched\""));
+        assert!(json.contains("\"subtask_id\":\"sub-abc\""));
+        assert!(json.contains("\"subtask_title\":\"Build feature\""));
+        let parsed: LogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, entry);
     }
 }

@@ -14,6 +14,7 @@ use std::path::Path;
 
 use orkestra_core::workflow::execution::SubtaskOutput;
 use orkestra_core::workflow::runtime::TaskState;
+use orkestra_types::domain::LogEntry;
 
 use super::helpers::{enable_auto_merge, workflows, MockAgentOutput, TestEnv};
 
@@ -1585,6 +1586,99 @@ fn manual_subtask_inherits_parent_flow() {
         subtask.current_stage(),
         Some("work"),
         "Subtask's first stage should be 'work' (hotfix flow's first stage)"
+    );
+}
+
+// =============================================================================
+// Activity Log Breadcrumbs
+// =============================================================================
+
+#[test]
+fn test_subtask_breadcrumbs_in_parent_log() {
+    let workflow = enable_auto_merge(workflows::with_subtasks());
+    let env = TestEnv::with_git(&workflow, &["planner", "breakdown", "worker", "reviewer"]);
+
+    // Drive parent through planning + breakdown, creating 2 subtasks
+    let subtask_outputs = vec![
+        SubtaskOutput {
+            title: "First subtask".to_string(),
+            description: "Do the first thing".to_string(),
+            detailed_instructions: "Instructions for first".to_string(),
+            depends_on: vec![],
+        },
+        SubtaskOutput {
+            title: "Second subtask".to_string(),
+            description: "Do the second thing".to_string(),
+            detailed_instructions: "Instructions for second".to_string(),
+            depends_on: vec![],
+        },
+    ];
+    let (parent_id, subtask_id_map) = setup_parent_with_subtasks(&env, subtask_outputs, None);
+
+    // Verify SubtaskDispatched entries in parent's breakdown session log
+    let sessions = env
+        .api()
+        .test_store()
+        .get_stage_sessions(&parent_id)
+        .unwrap();
+    assert!(!sessions.is_empty(), "Parent should have stage sessions");
+    let breakdown_session = sessions.last().unwrap();
+    let entries = env
+        .api()
+        .test_store()
+        .get_log_entries(&breakdown_session.id)
+        .unwrap();
+
+    let dispatched: Vec<_> = entries
+        .iter()
+        .filter(|e| matches!(e, LogEntry::SubtaskDispatched { .. }))
+        .collect();
+    assert_eq!(
+        dispatched.len(),
+        2,
+        "Parent log should have 2 SubtaskDispatched entries"
+    );
+
+    // Verify the titles match
+    let dispatched_titles: Vec<&str> = dispatched
+        .iter()
+        .filter_map(|e| {
+            if let LogEntry::SubtaskDispatched { subtask_title, .. } = e {
+                Some(subtask_title.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(dispatched_titles.contains(&"First subtask"));
+    assert!(dispatched_titles.contains(&"Second subtask"));
+
+    // Complete both subtasks so the parent can advance
+    let subtask_ids: Vec<&str> = subtask_id_map.iter().map(|(_, id)| id.as_str()).collect();
+    complete_subtasks(&env, &subtask_ids);
+
+    // Archive subtasks (integration merges them back)
+    env.advance(); // start integrations
+    env.advance(); // complete integrations
+
+    // Run check_parent_completions (via orchestrator tick)
+    env.advance();
+
+    // Verify SubtaskCompleted entries appear in the parent's log
+    let entries_after = env
+        .api()
+        .test_store()
+        .get_log_entries(&breakdown_session.id)
+        .unwrap();
+
+    let completed: Vec<_> = entries_after
+        .iter()
+        .filter(|e| matches!(e, LogEntry::SubtaskCompleted { .. }))
+        .collect();
+    assert_eq!(
+        completed.len(),
+        2,
+        "Parent log should have 2 SubtaskCompleted entries after all subtasks archive"
     );
 }
 

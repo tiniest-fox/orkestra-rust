@@ -1,5 +1,7 @@
 //! Advance parents whose subtasks have all been archived.
 
+use orkestra_types::domain::LogEntry;
+
 use crate::orkestra_debug;
 use crate::workflow::api::WorkflowApi;
 use crate::workflow::domain::TickSnapshot;
@@ -36,6 +38,21 @@ pub fn execute(
 
         if all_archived {
             let subtask_count = subtasks.len();
+
+            // Write completion breadcrumbs to parent's activity log.
+            // All subtasks are Archived here (guaranteed by all_archived guard above),
+            // so SubtaskCompleted is always correct — Failed and Archived are mutually exclusive.
+            if let Ok(sessions) = api.store.get_stage_sessions(&parent.id) {
+                if let Some(session) = sessions.last() {
+                    for subtask in &subtasks {
+                        let entry = LogEntry::SubtaskCompleted {
+                            subtask_id: subtask.id.clone(),
+                            subtask_title: subtask.title.clone(),
+                        };
+                        let _ = api.store.append_log_entry(&session.id, &entry, None);
+                    }
+                }
+            }
 
             match api.advance_parent(&parent.id) {
                 Ok(_) => {

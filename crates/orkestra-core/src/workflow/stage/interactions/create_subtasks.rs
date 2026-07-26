@@ -1,5 +1,7 @@
 //! Create subtask records from an approved breakdown.
 
+use orkestra_types::domain::LogEntry;
+
 use crate::workflow::config::WorkflowConfig;
 use crate::workflow::domain::{extract_short_id, Task};
 use crate::workflow::execution::SubtaskOutput;
@@ -93,6 +95,22 @@ pub fn execute(
         // Re-save with dependencies set
         store.save_task(&created_tasks[i])?;
         iteration_service.create_initial_iteration(&created_tasks[i].id, &first_stage.name)?;
+    }
+
+    // Write dispatch breadcrumbs to parent's activity log
+    if let Ok(sessions) = store.get_stage_sessions(&parent.id) {
+        if let Some(session) = sessions.last() {
+            for subtask in &created_tasks {
+                let _ = store.append_log_entry(
+                    &session.id,
+                    &LogEntry::SubtaskDispatched {
+                        subtask_id: subtask.id.clone(),
+                        subtask_title: subtask.title.clone(),
+                    },
+                    None,
+                );
+            }
+        }
     }
 
     Ok(created_tasks)

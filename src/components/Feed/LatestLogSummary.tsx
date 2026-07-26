@@ -105,6 +105,12 @@ function entrySummary(entry: LogEntry): string | null {
       return entry.passed ? "gate passed" : "gate failed";
     case "gate_output":
       return null;
+    case "subtask_dispatched":
+      return `↳ Dispatched sub-Trak: "${entry.subtask_title}"`;
+    case "subtask_completed":
+      return `↳ Sub-Trak "${entry.subtask_title}" completed`;
+    case "subtask_failed":
+      return `↳ Sub-Trak "${entry.subtask_title}" failed`;
     default:
       return null;
   }

@@ -557,6 +557,32 @@ export const AgentEntry = memo(function AgentEntry({
     case "process_exit":
       return null;
 
+    case "subtask_dispatched":
+      return (
+        <div className="font-mono text-forge-mono-sm py-0.5">
+          <span className="text-text-tertiary">↳ Dispatched sub-Trak: </span>
+          <span className="text-text-secondary">"{entry.subtask_title}"</span>
+        </div>
+      );
+
+    case "subtask_completed":
+      return (
+        <div className="font-mono text-forge-mono-sm py-0.5">
+          <span className="text-text-tertiary">↳ Sub-Trak </span>
+          <span className="text-text-secondary">"{entry.subtask_title}"</span>
+          <span className="text-text-tertiary"> completed</span>
+        </div>
+      );
+
+    case "subtask_failed":
+      return (
+        <div className="font-mono text-forge-mono-sm py-0.5">
+          <span className="text-text-tertiary">↳ Sub-Trak </span>
+          <span className="text-text-secondary">"{entry.subtask_title}"</span>
+          <span className="text-text-tertiary"> failed</span>
+        </div>
+      );
+
     default:
       return null;
   }

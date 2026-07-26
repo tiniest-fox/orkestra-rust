@@ -88,6 +88,7 @@ mod tests {
             author: "test".into(),
             timestamp: "2026-01-01".into(),
             file_count: None,
+            from_subtask: None,
         }]));
         git.set_has_pending_changes(true);
         let result = execute(&store, &git, "t1").unwrap();

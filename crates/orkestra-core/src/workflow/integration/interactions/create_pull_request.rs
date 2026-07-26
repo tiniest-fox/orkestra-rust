@@ -173,6 +173,7 @@ mod tests {
             author: "Test".to_string(),
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             file_count: None,
+            from_subtask: None,
         }]));
 
         let pr_service = MockPrService::new();

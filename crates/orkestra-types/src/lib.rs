@@ -10,3 +10,4 @@ pub mod domain;
 pub mod runtime;
 
 pub use config::VIBE_STAGE;
+pub use domain::{format_subtask_trailers, parse_subtask_trailers, SubtaskProvenance};

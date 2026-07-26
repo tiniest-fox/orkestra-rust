@@ -45,6 +45,9 @@ pub(super) fn parse_log_output(stdout: &str) -> Vec<CommitInfo> {
             } else {
                 Some(body_text.to_string())
             };
+            let from_subtask = body
+                .as_ref()
+                .and_then(|b| orkestra_types::parse_subtask_trailers(b));
             commits.push(CommitInfo {
                 hash: parts[0].to_string(),
                 message: parts[1].to_string(),
@@ -52,6 +55,7 @@ pub(super) fn parse_log_output(stdout: &str) -> Vec<CommitInfo> {
                 author: parts[2].to_string(),
                 timestamp: parts[3].to_string(),
                 file_count: None,
+                from_subtask,
             });
         }
     }

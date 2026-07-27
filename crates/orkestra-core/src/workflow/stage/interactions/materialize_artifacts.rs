@@ -619,4 +619,55 @@ mod tests {
         );
         assert!(matches!(timeline[1], ActivityEntry::Log(_)));
     }
+
+    #[test]
+    fn test_fetch_branch_commits_extracts_subtask_trailer() {
+        use std::process::Command;
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Initialise a minimal git repo with a base commit on main.
+        for args in &[
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "test@test.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+        }
+        // Initial commit on main (the base).
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial commit"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        // Add a commit on top of main with subtask trailers in the body.
+        let trailer_body =
+            "Subtrak-of: parent-abc\nSubtrak-id: child-xyz\nSubtrak-title: Add login page";
+        Command::new("git")
+            .args([
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Add login page",
+                "-m",
+                trailer_body,
+            ])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let commits = fetch_branch_commits(dir, "main~1");
+        assert_eq!(commits.len(), 1, "should find one commit ahead of base");
+        assert_eq!(
+            commits[0].from_subtask.as_deref(),
+            Some("Add login page"),
+            "from_subtask should be the Subtrak-title"
+        );
+    }
 }

@@ -62,3 +62,69 @@ pub(super) fn parse_log_output(stdout: &str) -> Vec<CommitInfo> {
 
     commits
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(hash: &str, subject: &str, author: &str, date: &str, body: &str) -> String {
+        format!("\x1e{hash}\x00{subject}\x00{author}\x00{date}\x00{body}")
+    }
+
+    #[test]
+    fn test_commit_with_subtask_trailers_populates_from_subtask() {
+        let body = "Subtrak-of: parent-1\nSubtrak-id: child-1\nSubtrak-title: Add auth layer";
+        let stdout = record(
+            "abc1234",
+            "Add auth layer",
+            "Alice",
+            "2024-01-01T10:00:00Z",
+            body,
+        );
+        let commits = parse_log_output(&stdout);
+        assert_eq!(commits.len(), 1);
+        let provenance = commits[0]
+            .from_subtask
+            .as_ref()
+            .expect("from_subtask should be Some");
+        assert_eq!(provenance.parent_id, "parent-1");
+        assert_eq!(provenance.subtask_id, "child-1");
+        assert_eq!(provenance.title, "Add auth layer");
+        assert_eq!(commits[0].body.as_deref(), Some(body));
+    }
+
+    #[test]
+    fn test_commit_without_trailers_has_none_from_subtask() {
+        let body = "This is a regular commit body with no trailers.";
+        let stdout = record(
+            "def5678",
+            "Fix the bug",
+            "Bob",
+            "2024-01-02T12:00:00Z",
+            body,
+        );
+        let commits = parse_log_output(&stdout);
+        assert_eq!(commits.len(), 1);
+        assert!(commits[0].from_subtask.is_none());
+        assert_eq!(commits[0].body.as_deref(), Some(body));
+    }
+
+    #[test]
+    fn test_commit_with_empty_body_has_none_body_and_from_subtask() {
+        let stdout = record(
+            "fed9876",
+            "Initial commit",
+            "Carol",
+            "2024-01-03T08:00:00Z",
+            "",
+        );
+        let commits = parse_log_output(&stdout);
+        assert_eq!(commits.len(), 1);
+        assert!(commits[0].body.is_none());
+        assert!(commits[0].from_subtask.is_none());
+    }
+}

@@ -2,6 +2,7 @@
 
 use orkestra_types::domain::LogEntry;
 
+use crate::orkestra_debug;
 use crate::workflow::config::WorkflowConfig;
 use crate::workflow::domain::{extract_short_id, Task};
 use crate::workflow::execution::SubtaskOutput;
@@ -97,19 +98,40 @@ pub fn execute(
         iteration_service.create_initial_iteration(&created_tasks[i].id, &first_stage.name)?;
     }
 
-    // Write dispatch breadcrumbs to parent's activity log
-    if let Ok(sessions) = store.get_stage_sessions(&parent.id) {
-        if let Some(session) = sessions.last() {
-            for subtask in &created_tasks {
-                let _ = store.append_log_entry(
-                    &session.id,
-                    &LogEntry::SubtaskDispatched {
-                        subtask_id: subtask.id.clone(),
-                        subtask_title: subtask.title.clone(),
-                    },
-                    None,
-                );
+    // Write dispatch breadcrumbs to parent's breakdown stage session.
+    match store.get_stage_sessions(&parent.id) {
+        Ok(sessions) => {
+            if let Some(session) = sessions
+                .iter()
+                .rev()
+                .find(|s| Some(s.stage.as_str()) == parent.current_stage())
+            {
+                for subtask in &created_tasks {
+                    if let Err(e) = store.append_log_entry(
+                        &session.id,
+                        &LogEntry::SubtaskDispatched {
+                            subtask_id: subtask.id.clone(),
+                            subtask_title: subtask.title.clone(),
+                        },
+                        None,
+                    ) {
+                        orkestra_debug!(
+                            "orchestrator",
+                            "failed to write SubtaskDispatched breadcrumb for {}: {}",
+                            subtask.id,
+                            e
+                        );
+                    }
+                }
             }
+        }
+        Err(e) => {
+            orkestra_debug!(
+                "orchestrator",
+                "failed to get sessions for parent {} — skipping dispatch breadcrumbs: {}",
+                parent.id,
+                e
+            );
         }
     }
 

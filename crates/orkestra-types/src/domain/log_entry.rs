@@ -214,11 +214,6 @@ pub enum LogEntry {
         subtask_id: String,
         subtask_title: String,
     },
-    /// A subtask failed.
-    SubtaskFailed {
-        subtask_id: String,
-        subtask_title: String,
-    },
 }
 
 /// A log entry with associated database metadata.
@@ -256,7 +251,6 @@ impl LogEntry {
             LogEntry::ExtractedJson { .. } => "extracted_json",
             LogEntry::SubtaskDispatched { .. } => "subtask_dispatched",
             LogEntry::SubtaskCompleted { .. } => "subtask_completed",
-            LogEntry::SubtaskFailed { .. } => "subtask_failed",
         }
     }
 
@@ -313,9 +307,6 @@ impl LogEntry {
             }
             LogEntry::SubtaskCompleted { subtask_title, .. } => {
                 Some(format!("↳ Sub-Trak \"{subtask_title}\" completed"))
-            }
-            LogEntry::SubtaskFailed { subtask_title, .. } => {
-                Some(format!("↳ Sub-Trak \"{subtask_title}\" failed"))
             }
             _ => None,
         }
@@ -724,15 +715,6 @@ mod tests {
     }
 
     #[test]
-    fn test_subtask_failed_type_name() {
-        let entry = LogEntry::SubtaskFailed {
-            subtask_id: "sub-1".to_string(),
-            subtask_title: "Fix bug".to_string(),
-        };
-        assert_eq!(entry.type_name(), "subtask_failed");
-    }
-
-    #[test]
     fn test_subtask_dispatched_push_summary() {
         let entry = LogEntry::SubtaskDispatched {
             subtask_id: "sub-1".to_string(),
@@ -753,18 +735,6 @@ mod tests {
         assert_eq!(
             entry.push_summary(),
             Some("↳ Sub-Trak \"Fix the flaky test\" completed".to_string())
-        );
-    }
-
-    #[test]
-    fn test_subtask_failed_push_summary() {
-        let entry = LogEntry::SubtaskFailed {
-            subtask_id: "sub-1".to_string(),
-            subtask_title: "Fix the flaky test".to_string(),
-        };
-        assert_eq!(
-            entry.push_summary(),
-            Some("↳ Sub-Trak \"Fix the flaky test\" failed".to_string())
         );
     }
 

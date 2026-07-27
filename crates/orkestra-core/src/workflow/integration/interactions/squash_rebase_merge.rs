@@ -69,18 +69,7 @@ pub(crate) fn execute(
     // goes on the merge commit created on the target branch by merge_to_branch.
     if let Some(worktree_path) = &task.worktree_path {
         let base_squash_message = fallback_commit_message(&task.title, &task.id);
-        let squash_message = if task.is_subtask() {
-            let trailers = orkestra_types::format_subtask_trailers(
-                task.parent_id
-                    .as_deref()
-                    .expect("parent_id guaranteed by is_subtask()"),
-                &task.id,
-                &task.title,
-            );
-            format!("{}\n\n{}", base_squash_message.trim_end(), trailers)
-        } else {
-            base_squash_message
-        };
+        let squash_message = with_subtask_trailers(&base_squash_message, task);
         match git.squash_commits(Path::new(worktree_path), &task.base_branch, &squash_message) {
             Ok(squashed) => {
                 if squashed {
@@ -134,6 +123,22 @@ pub(crate) fn execute(
 }
 
 // -- Helpers --
+
+/// Append subtask provenance trailers to a commit message when the task is a subtask.
+fn with_subtask_trailers(base_message: &str, task: &Task) -> String {
+    if task.is_subtask() {
+        let trailers = orkestra_types::format_subtask_trailers(
+            task.parent_id
+                .as_deref()
+                .expect("parent_id guaranteed by is_subtask()"),
+            &task.id,
+            &task.title,
+        );
+        format!("{}\n\n{}", base_message.trim_end(), trailers)
+    } else {
+        base_message.to_owned()
+    }
+}
 
 /// Sync merge into worktree, generate AI commit message, then merge to target branch.
 ///
@@ -233,20 +238,7 @@ fn perform_git_integration(
         params.workflow,
         params.commit_message_generator,
     );
-    let commit_message = if params.task.is_subtask() {
-        let trailers = orkestra_types::format_subtask_trailers(
-            params
-                .task
-                .parent_id
-                .as_deref()
-                .expect("parent_id guaranteed by is_subtask()"),
-            &params.task.id,
-            &params.task.title,
-        );
-        format!("{}\n\n{}", base_commit_message.trim_end(), trailers)
-    } else {
-        base_commit_message
-    };
+    let commit_message = with_subtask_trailers(&base_commit_message, params.task);
 
     // Merge to target branch with the AI-generated message (--no-ff).
     match git.merge_to_branch(

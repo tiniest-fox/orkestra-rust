@@ -39,18 +39,39 @@ pub fn execute(
         if all_archived {
             let subtask_count = subtasks.len();
 
-            // Write completion breadcrumbs to parent's activity log.
-            // All subtasks are Archived here (guaranteed by all_archived guard above),
-            // so SubtaskCompleted is always correct — Failed and Archived are mutually exclusive.
-            if let Ok(sessions) = api.store.get_stage_sessions(&parent.id) {
-                if let Some(session) = sessions.last() {
-                    for subtask in &subtasks {
-                        let entry = LogEntry::SubtaskCompleted {
-                            subtask_id: subtask.id.clone(),
-                            subtask_title: subtask.title.clone(),
-                        };
-                        let _ = api.store.append_log_entry(&session.id, &entry, None);
+            // Write completion breadcrumbs to the breakdown stage session.
+            // WaitingOnChildren stores the *next* stage, not the breakdown stage, so
+            // sessions.last() is used — at this point the last session is always the
+            // breakdown session (the parent cannot advance past WaitingOnChildren until
+            // subtasks archive). All subtasks are Archived here (guaranteed by all_archived
+            // guard above), so SubtaskCompleted is correct — Failed and Archived are mutually
+            // exclusive.
+            match api.store.get_stage_sessions(&parent.id) {
+                Ok(sessions) => {
+                    if let Some(session) = sessions.last() {
+                        for subtask in &subtasks {
+                            let entry = LogEntry::SubtaskCompleted {
+                                subtask_id: subtask.id.clone(),
+                                subtask_title: subtask.title.clone(),
+                            };
+                            if let Err(e) = api.store.append_log_entry(&session.id, &entry, None) {
+                                orkestra_debug!(
+                                    "orchestrator",
+                                    "failed to write SubtaskCompleted breadcrumb for {}: {}",
+                                    subtask.id,
+                                    e
+                                );
+                            }
+                        }
                     }
+                }
+                Err(e) => {
+                    orkestra_debug!(
+                        "orchestrator",
+                        "failed to get sessions for parent {} — skipping completion breadcrumbs: {}",
+                        parent.id,
+                        e
+                    );
                 }
             }
 
